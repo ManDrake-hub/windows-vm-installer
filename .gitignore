@@ -1,0 +1,11 @@
+# Test runs: disk images, VM state, screenshots
+test/
+*.iso
+*.img
+# Python
+__pycache__/
+*.pyc
+.mypy_cache/
+dist/
+build/
+*.egg-info/
