@@ -157,6 +157,14 @@ PYTHONPATH=src python3 -m wvi gui --test-image /var/tmp/test.img
 PYTHONPATH=src python3 tools/gui_screenshots.py --out docs/screenshots --scheme light
 ```
 
+---
+## Support
+
+If this project helped you and you’d like to support it ❤️:
+
+[![Donate with PayPal](https://img.shields.io/badge/Donate-PayPal-00457C?style=for-the-badge&logo=paypal&logoColor=white)](https://paypal.me/capasotta)
+
+---
 ## License
 
 Copyright (C) 2026 Geraldino Mandragora
