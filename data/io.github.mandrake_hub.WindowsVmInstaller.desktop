@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Windows VM Installer
+Comment=Install Windows on another disk, without a USB stick
+Exec=windows-vm-installer gui
+Icon=drive-harddisk
+Terminal=false
+Categories=System;
+Keywords=windows;dual boot;installer;disk;
+StartupNotify=true
