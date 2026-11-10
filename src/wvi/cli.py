@@ -4,17 +4,19 @@
 from __future__ import annotations
 
 import argparse
+import fcntl
 import json
 import os
+import platform
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
-import time
 from pathlib import Path
 
 from . import __version__, bootloaders, efi, unattend
-from .disks import Disk, list_disks
+from .disks import Disk, DiskError, kernel_busy, list_disks
 from .fat import FAT32, FATError
 from .gpt import GPTError, read_gpt
 from .iso9660 import write_iso
@@ -43,9 +45,16 @@ class Abort(Exception):
 # --- output helpers -------------------------------------------------------
 
 def emit(event: str, **data) -> None:
-    if EVENTS is not None:
+    global EVENTS
+    if EVENTS is None:
+        return
+    try:
         EVENTS.write(json.dumps({"event": event, **data}) + "\n")
         EVENTS.flush()
+    except OSError:
+        # The program reading the events is gone (the GUI was closed): stop the work in progress
+        EVENTS = None
+        raise KeyboardInterrupt from None
 
 
 
@@ -101,9 +110,11 @@ def choose(title: str, items: list[str], selectable: list[bool] | None = None) -
 
 # --- checks ---------------------------------------------------------------
 
-def host_problems(test_mode: bool, boot_entry: bool) -> list[str]:
+def host_problems(test_mode: bool, boot_entry: bool, check_root: bool = True) -> list[str]:
     problems = []
-    if not test_mode and os.geteuid() != 0:
+    if platform.machine() not in ("x86_64", "AMD64"):
+        problems.append(f"this tool installs x64 Windows and needs an x86-64 PC (this is {platform.machine()})")
+    if check_root and not test_mode and os.geteuid() != 0:
         problems.append("run as root (sudo): the target disk and the UEFI boot entries need it")
     if not os.access("/dev/kvm", os.R_OK | os.W_OK):
         problems.append("/dev/kvm is not available: enable virtualization (VT-x/AMD-V) in the firmware")
@@ -128,7 +139,10 @@ def describe_disk(d: Disk) -> str:
 
 
 def pick_disk(path: str | None) -> Disk:
-    disks = list_disks()
+    try:
+        disks = list_disks()
+    except DiskError as e:
+        raise Abort(str(e)) from None
     if path:
         real = os.path.realpath(path)
         disk = next((d for d in disks if d.path == real), None)
@@ -186,10 +200,20 @@ show_progress.last_minute = -1  # type: ignore[attr-defined]
 show_progress.last_second = -1  # type: ignore[attr-defined]
 
 
-def verify_target(target: str) -> tuple[int, str, str]:
+BLKFLSBUF = 0x1261  # ioctl: drop the kernel's cached copy of a block device
+
+
+def verify_target(target: str, sector_size: int | None = None) -> tuple[int, str, str]:
     """Check a disk with Windows on it: (ESP number, ESP partition GUID, FAT volume id)."""
     try:
-        table = read_gpt(target)
+        if stat.S_ISBLK(os.stat(target).st_mode):
+            # The VM wrote with direct I/O: make sure we do not read stale cached sectors
+            with open(target, "rb") as f:
+                fcntl.ioctl(f, BLKFLSBUF)
+    except OSError:
+        pass
+    try:
+        table = read_gpt(target, sector_size)
     except (GPTError, OSError) as e:
         raise Abort(f"{target} has no valid GPT: {e}") from None
     esp = table.esp()
@@ -297,10 +321,18 @@ def cmd_install(args: argparse.Namespace) -> None:
         accept_eula=True, utc_clock=not args.no_utc_clock,
         disable_fast_startup=not args.keep_fast_startup))
 
+    if disk:
+        # Check again right before writing: the disk may have been mounted or
+        # claimed while the questions above were being answered
+        disk = pick_disk(disk.path)
+        if kernel_busy(disk.path):
+            raise Abort(f"{disk.path} is in use (the kernel reports it as busy), nothing was changed")
+
     workdir = Path(tempfile.mkdtemp(prefix="windows-vm-installer-", dir="/var/tmp"))
     workdir.chmod(0o755)  # the GUI runs as the user and shows the log and the last screen
     answer_iso = workdir / "answer.iso"
     write_iso(answer_iso, {"autounattend.xml": answer.encode()})
+    answer_iso.chmod(0o600)  # it may hold the product key
     if test_mode and not target.exists():
         with open(target, "wb") as f:
             f.truncate(TEST_IMAGE_SIZE)
@@ -308,30 +340,43 @@ def cmd_install(args: argparse.Namespace) -> None:
     firmware = find_firmware()
     assert firmware
     vm = InstallerVM(workdir, iso_path, answer_iso, target, disk.controller if disk else "nvme",
-                     firmware, memory_mb=args.memory, show=args.show)
+                     firmware, memory_mb=args.memory, show=args.show,
+                     sector_size=disk.sector_size if disk else 512,
+                     physical_sector_size=disk.physical_sector_size if disk else 512)
     print(bold("Installing Windows (first phase, in a hidden virtual machine)"))
     emit("started", edition=edition.name, target=str(target), workdir=str(workdir))
-    ok = False
+
+    def diagnostics() -> dict:
+        shots = [workdir / name for name in ("last-screen.png", "screen.png")]
+        shot = next((str(s) for s in shots if s.exists()), None)
+        return {"log": str(vm.log_path), "screenshot": shot}
+
+    def failure(message: str) -> Abort:
+        d = diagnostics()
+        text = f"{message}\n  Log: {d['log']}" + (f"\n  Last screen: {d['screenshot']}" if d["screenshot"] else "")
+        return Abort(text, **d)
+
     try:
         vm.start()
         vm.run(lambda p: show_progress(p, int(edition.total_bytes * WRITE_RATIO)))
-        ok = True
     except VMError as e:
-        shot = workdir / "last-screen.png"
-        shot_path = str(shot) if shot.exists() else None
-        raise Abort(f"{e}\n  Log: {vm.log_path}" + (f"\n  Last screen: {shot}" if shot_path else ""),
-                    log=str(vm.log_path), screenshot=shot_path) from None
+        raise failure(str(e)) from None
     except KeyboardInterrupt:
-        raise Abort(f"interrupted; the target disk may be partially written. Log: {vm.log_path}",
-                    log=str(vm.log_path)) from None
+        raise failure("interrupted; the target disk may be partially written") from None
     finally:
         vm.stop()
         if TTY:
             print()
-        if ok:
-            shutil.rmtree(workdir, ignore_errors=True)
+        # Keep only the log and the screenshots: the answer file may hold the product key
+        answer_iso.unlink(missing_ok=True)
+        (workdir / "OVMF_VARS.fd").unlink(missing_ok=True)
+        shutil.rmtree(workdir / "tpm", ignore_errors=True)
 
-    esp_number, esp_guid, esp_volume_id = verify_target(str(target))
+    try:
+        esp_number, esp_guid, esp_volume_id = verify_target(str(target), disk.sector_size if disk else None)
+    except Abort as e:
+        raise failure(f"Windows Setup ended, but the disk is not ready: {e}") from None
+    shutil.rmtree(workdir, ignore_errors=True)
     print(green(f"First phase done: Windows boot files are on partition {esp_number}."))
     emit("first_phase_done", esp_partition=esp_number)
 
@@ -342,18 +387,26 @@ def cmd_install(args: argparse.Namespace) -> None:
     subprocess.run(["partx", "-u", disk.path], capture_output=True)  # refresh the kernel's view
     subprocess.run(["udevadm", "settle"], capture_output=True)
 
+    entry_created = False
     if not args.no_boot_entry:
         label = f"{edition.name} ({disk.model or disk.name})"[:60]
-        num = efi.create_windows_entry(disk.path, esp_number, label)
-        efi.put_first(num)
-        print(green(f"Boot entry Boot{num} '{label}' created and put first."))
-        emit("boot_entry", number=num, label=label)
+        try:
+            num = efi.create_windows_entry(disk.path, esp_number, label)
+            efi.put_first(num)
+            entry_created = True
+            print(green(f"Boot entry Boot{num} '{label}' created and put first."))
+            emit("boot_entry", number=num, label=label, error=None)
+        except (efi.EFIError, OSError) as e:
+            # Windows is installed all the same: say so and go on
+            print(red(f"Could not create the UEFI boot entry: {e}"))
+            emit("boot_entry", number=None, label=label, error=str(e))
     if not args.no_bootloader:
         print()
         add_to_boot_manager(bootloaders.WindowsTarget(edition.name, esp_guid, esp_volume_id), args.yes)
 
-    if args.no_boot_entry:
-        steps = ["Reboot and start Windows from your boot menu: it finishes its setup on the real hardware."]
+    if not entry_created:
+        steps = ["Reboot and start Windows from your boot menu, or pick its disk in the firmware boot menu: "
+                 "it finishes its setup on the real hardware (devices, account, activation)."]
     else:
         steps = [
             "Reboot: Windows finishes its setup on the real hardware (devices, account, activation). "
@@ -369,8 +422,12 @@ def cmd_install(args: argparse.Namespace) -> None:
 
 
 def cmd_list_disks(args: argparse.Namespace) -> None:
-    for d in list_disks():
-        print(("  " if d.usable else red("✗ ")) + describe_disk(d))
+    try:
+        disks = list_disks()
+    except DiskError as e:
+        raise Abort(str(e)) from None
+    for d in disks:
+        print(("  " if d.usable else red("x ")) + describe_disk(d))
         if d.by_id:
             print(f"      {d.by_id}")
         for w in d.warnings:
@@ -400,9 +457,9 @@ def cmd_restore_boot(args: argparse.Namespace) -> None:
         raise Abort("run as root (sudo)")
     try:
         order = efi.restore_order()
-    except efi.EFIError as e:
+        entries = efi.read_state().entries
+    except (efi.EFIError, OSError) as e:
         raise Abort(str(e)) from None
-    entries = efi.read_state().entries
     print(green("Boot order restored:"))
     for n in order:
         print(f"  Boot{n}  {entries.get(n, '')}")
@@ -455,18 +512,23 @@ def main(argv: list[str] | None = None) -> int:
     global EVENTS, TTY
     if getattr(args, "json", False):
         EVENTS, sys.stdout, TTY = sys.stdout, sys.stderr, False
+    def report(text: str, message: str, **details) -> None:
+        try:  # stderr and the event pipe may both be gone if the GUI was closed
+            print(red(text), file=sys.stderr)
+            emit("error", message=message, **details)
+        except (OSError, KeyboardInterrupt):
+            pass
+
     try:
         args.func(args)
     except Abort as e:
-        print(red(f"Error: {e}"), file=sys.stderr)
-        emit("error", message=str(e).split("\n")[0], **e.details)
+        report(f"Error: {e}", str(e).split("\n")[0], **e.details)
         return 1
     except KeyboardInterrupt:
-        print(red("\nInterrupted."), file=sys.stderr)
-        emit("error", message="interrupted")
+        report("\nInterrupted.", "interrupted")
         return 130
     except Exception as e:  # report unexpected failures to the GUI too
-        emit("error", message=f"unexpected error: {e!r}")
+        report(f"Unexpected error: {e!r}", f"unexpected error: {e!r}")
         raise
     return 0
 

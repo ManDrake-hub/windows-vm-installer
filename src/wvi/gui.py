@@ -26,7 +26,7 @@ from gi.repository import Adw, Gdk, Gio, GLib, GObject, Gtk  # noqa: E402
 
 from . import bootloaders, efi  # noqa: E402
 from .cli import EULA_URL, host_problems  # noqa: E402
-from .disks import Disk, list_disks  # noqa: E402
+from .disks import Disk, DiskError, list_disks  # noqa: E402
 from .winiso import Edition, NotWindowsISO, WindowsISO, inspect_iso  # noqa: E402
 
 APP_ID = "io.github.mandrake_hub.WindowsVmInstaller"
@@ -88,7 +88,8 @@ class Backend:
         self.test_image = test_image
 
     def problems(self) -> list[str]:
-        found = host_problems(test_mode=True, boot_entry=False)  # root comes from pkexec
+        # Same checks as the installer, except being root: that comes from pkexec
+        found = host_problems(test_mode=bool(self.test_image), boot_entry=True, check_root=False)
         if not self.test_image and shutil.which("pkexec") is None:
             found.append("pkexec (polkit) is not installed")
         return found
@@ -106,12 +107,17 @@ class Backend:
         return efi.STATE_FILE.exists()
 
     def boot_menu_summary(self) -> str:
+        """Which boot manager is in use. The details need root (the EFI partition is often
+        not readable by users), so they are worked out when the installation runs."""
+        names = {"limine": "Limine", "grub": "GRUB", "refind": "rEFInd", "systemd-boot": "systemd-boot",
+                 "uki": "none (Linux starts straight from the firmware)"}
         try:
-            bm = bootloaders.detect()
-            plan = bootloaders.plan(bm, bootloaders.WindowsTarget("Windows", "", ""))
-            return f"{bm.kind}: {plan.summary}"
-        except Exception:  # detection is best effort without root
-            return "detected when the installation runs"
+            kind = bootloaders.detect().kind
+        except Exception:  # detection is best effort
+            kind = "unknown"
+        if kind in names:
+            return f"Detected boot manager: {names[kind]}"
+        return "The boot manager is detected when the installation runs"
 
     def argv(self, args: list[str], elevated: bool) -> list[str]:
         cmd = [sys.executable, "-m", "wvi", *args]
@@ -127,12 +133,28 @@ class Backend:
         launcher = Gio.SubprocessLauncher.new(Gio.SubprocessFlags.STDOUT_PIPE | Gio.SubprocessFlags.STDERR_PIPE)
         launcher.setenv("PYTHONPATH", PACKAGE_PARENT, True)
         proc = launcher.spawnv(self.argv([*args, "--json"], elevated=not self.test_image))
+        # The exit is reported only after both pipes were read to the end: the process can
+        # end before its last events (such as "done") have been delivered
+        state = {"pending": 3, "status": 0, "reported": False}
+
+        def report() -> bool:
+            if not state["reported"]:
+                state["reported"] = True
+                job.on_exit(state["status"], "\n".join(job.stderr_tail))
+            return False  # also a one-shot timeout callback
+
+        def part_done() -> None:
+            state["pending"] -= 1
+            if state["pending"] == 0:
+                report()
 
         def on_stdout(line: str) -> None:
             try:
-                job.on_event(json.loads(line))
+                event = json.loads(line)
             except ValueError:
                 job.on_log(line)
+                return
+            job.on_event(event)
 
         def on_stderr(line: str) -> None:
             job.stderr_tail[:] = (job.stderr_tail + [line])[-20:]
@@ -140,22 +162,36 @@ class Backend:
 
         def on_finished(p, res):
             p.wait_finish(res)
-            job.on_exit(p.get_exit_status(), "\n".join(job.stderr_tail))
+            state["status"] = p.get_exit_status() if p.get_if_exited() else 128 + p.get_term_sig()
+            part_done()
+            # A stray grandchild may keep the pipes open: do not wait for it forever
+            GLib.timeout_add(2000, report)
 
-        _read_lines(proc.get_stdout_pipe(), on_stdout)
-        _read_lines(proc.get_stderr_pipe(), on_stderr)
+        _read_lines(proc.get_stdout_pipe(), on_stdout, part_done)
+        _read_lines(proc.get_stderr_pipe(), on_stderr, part_done)
         proc.wait_async(None, on_finished)
 
 
-def _read_lines(stream: Gio.InputStream, on_line: Callable[[str], None]) -> None:
+def _read_lines(stream: Gio.InputStream, on_line: Callable[[str], None], on_eof: Callable[[], None]) -> None:
     data = Gio.DataInputStream.new(stream)
 
     def next_line(src, res):
-        line, _ = src.read_line_finish_utf8(res)
+        # The _utf8 variant returns None at the end of the stream; the bytes one returns
+        # b"" both there and for an empty line, so it cannot tell them apart
+        try:
+            line, _ = src.read_line_finish_utf8(res)
+        except GLib.Error as e:
+            if not e.matches(GLib.convert_error_quark(), GLib.ConvertError.ILLEGAL_SEQUENCE):
+                on_eof()  # read error: treat as the end of the stream
+                return
+            line = "(a line that is not valid UTF-8)"
         if line is None:
+            on_eof()
             return
-        on_line(line)
-        src.read_line_async(GLib.PRIORITY_DEFAULT, None, next_line)
+        try:
+            on_line(line)
+        finally:  # keep reading whatever happens, or the child would block on a full pipe
+            src.read_line_async(GLib.PRIORITY_DEFAULT, None, next_line)
 
     data.read_line_async(GLib.PRIORITY_DEFAULT, None, next_line)
 
@@ -194,10 +230,35 @@ class Window(Adw.ApplicationWindow):
         super().__init__(application=app, title="Windows VM Installer", default_width=760, default_height=720)
         self.backend = backend
         self.choices = Choices()
+        self.installing = False
         self.nav = Adw.NavigationView()
         self.toasts = Adw.ToastOverlay(child=self.nav)
         self.set_content(self.toasts)
         self.nav.push(self._iso_page())
+        self.connect("close-request", self._on_close_request)
+
+    def _on_close_request(self, *_args) -> bool:
+        """Closing the window ends the installer process too: ask before interrupting it."""
+        if not self.installing:
+            return False
+        dialog = Adw.AlertDialog(
+            heading="Stop the installation?",
+            body="Windows is being installed. If you close this window the installation stops and the "
+                 "target disk is left partially written.")
+        dialog.add_response("continue", "Keep installing")
+        dialog.add_response("stop", "Stop and close")
+        dialog.set_response_appearance("stop", Adw.ResponseAppearance.DESTRUCTIVE)
+        dialog.set_default_response("continue")
+        dialog.set_close_response("continue")
+
+        def response(_dialog, rid):
+            if rid == "stop":
+                self.installing = False
+                self.close()  # the installer notices its pipes closing and stops the virtual machine
+
+        dialog.connect("response", response)
+        dialog.present(self)
+        return True
 
     # 1. ISO ---------------------------------------------------------------
 
@@ -297,7 +358,12 @@ class Window(Adw.ApplicationWindow):
 
         first_check = None
         self.disk_checks: dict[str, Gtk.CheckButton] = {}  # used by the screenshot tool
-        for disk in self.backend.disks():
+        try:
+            disks = self.backend.disks()
+        except DiskError as e:
+            group.add(info_row("The disks could not be listed", str(e), "dialog-error-symbolic"))
+            disks = []
+        for disk in disks:
             details = [disk.path, disk.transport.upper()] + disk.problems + disk.warnings
             row = info_row(f"{disk.model or disk.name}  ·  {gb(disk.size)}", "\n".join(details))
             check = Gtk.CheckButton(valign=Gtk.Align.CENTER)
@@ -350,7 +416,7 @@ class Window(Adw.ApplicationWindow):
         entry = Adw.SwitchRow(title="Create a UEFI boot entry",
                               subtitle="First in the boot order until Windows finishes its setup", active=True)
         menu = Adw.SwitchRow(title="Add Windows to your boot menu",
-                             subtitle=self.backend.boot_menu_summary(), active=True)
+                             subtitle=GLib.markup_escape_text(self.backend.boot_menu_summary()), active=True)
         group.add(entry)
         group.add(menu)
         prefs.add(group)
@@ -430,6 +496,9 @@ class Window(Adw.ApplicationWindow):
     # 5. progress ----------------------------------------------------------
 
     def start_install(self) -> None:
+        if self.installing:  # a second click while the page is changing
+            return
+        self.installing = True
         args = self.choices.install_args(self.backend.test_image)
         self.progress = ProgressView(on_toast=lambda t: self.toasts.add_toast(Adw.Toast(title=t)))
         p = page("Installing", self.progress)
@@ -439,6 +508,7 @@ class Window(Adw.ApplicationWindow):
                                    lambda status, err: self.finished(status, err, args)))
 
     def finished(self, status: int, stderr_tail: str, args: list[str]) -> None:
+        self.installing = False
         result = self.progress.result
         if status == 0 and result is not None:
             self.nav.push(self._done_page(result))
@@ -463,8 +533,14 @@ class Window(Adw.ApplicationWindow):
         group = Adw.PreferencesGroup(title="Starting Windows")
         if self.progress.boot_entry:
             e = self.progress.boot_entry
-            group.add(info_row("UEFI boot entry", f"{e.get('label')} (Boot{e.get('number')}), first in the boot order",
-                               "object-select-symbolic"))
+            if e.get("error"):
+                row = info_row("UEFI boot entry", f"Not created: {e['error']}", "dialog-warning-symbolic")
+                row.set_subtitle_lines(0)
+                group.add(row)
+            else:
+                group.add(info_row("UEFI boot entry",
+                                   f"{e.get('label')} (Boot{e.get('number')}), first in the boot order",
+                                   "object-select-symbolic"))
         if self.progress.bootloader:
             b = self.progress.bootloader
             row = info_row(f"Boot menu ({b.get('kind', '')})",

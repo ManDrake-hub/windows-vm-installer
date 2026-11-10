@@ -132,7 +132,7 @@ class ISOTests(unittest.TestCase):
             self.assertEqual(out.stdout, b"<unattend/>")
 
 
-def make_gpt_image(path: Path, partitions: list[tuple[uuid.UUID, int, int]]) -> None:
+def make_gpt_image(path: Path, partitions: list[tuple[uuid.UUID, int, int]], ss: int = 512) -> None:
     """Write a minimal valid GPT (primary header and table only)."""
     entries = bytearray(128 * 128)
     for i, (ptype, first, last) in enumerate(partitions):
@@ -148,9 +148,9 @@ def make_gpt_image(path: Path, partitions: list[tuple[uuid.UUID, int, int]]) -> 
     struct.pack_into("<I", header, 16, zlib.crc32(header))
     with open(path, "wb") as f:
         f.truncate(2 * 2**20)
-        f.seek(512)
+        f.seek(ss)
         f.write(header)
-        f.seek(1024)
+        f.seek(2 * ss)
         f.write(entries)
 
 
@@ -163,6 +163,13 @@ class GPTTests(unittest.TestCase):
             self.assertEqual(table.sector_size, 512)
             self.assertEqual(table.esp().number, 1)
             self.assertEqual(table.esp().size(512), 2048 * 512)
+
+    def test_read_4k_native(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            img = Path(tmp) / "disk.img"
+            make_gpt_image(img, [(ESP_TYPE, 256, 511)], ss=4096)
+            self.assertEqual(read_gpt(img).sector_size, 4096)
+            self.assertEqual(read_gpt(img, 4096).esp().offset(4096), 256 * 4096)
 
 
 @unittest.skipUnless(shutil.which("mkfs.fat") and shutil.which("mmd") and shutil.which("mcopy"),
@@ -184,6 +191,93 @@ class FATTests(unittest.TestCase):
                 self.assertEqual(fs.stat("EFI/Microsoft/Boot/BCD"), (False, 24576))
                 self.assertEqual(fs.stat("efi/microsoft/boot"), (True, 0))
                 self.assertIsNone(fs.stat("EFI/Microsoft/Boot/bootmgfw.efi"))
+
+
+class QEMUCommandTests(unittest.TestCase):
+    def vm(self, **kw):
+        from wvi.qemu import Firmware, InstallerVM
+        return InstallerVM(Path("/var/tmp/w"), Path("/isos/Win11, Italian.iso"), Path("/var/tmp/w/answer.iso"),
+                           Path("/dev/nvme1n1"), kw.pop("controller", "nvme"), Firmware("/fw/code.fd", "/fw/vars.fd"),
+                           **kw)
+
+    def test_commas_in_paths_are_escaped(self):
+        cmd = self.vm().command()
+        iso = next(a for a in cmd if "id=iso" in a)
+        self.assertTrue(iso.startswith("file=/isos/Win11,, Italian.iso,format=raw"))
+
+    def test_sector_size_reaches_the_device(self):
+        plain = next(a for a in self.vm().command() if a.startswith("nvme,"))
+        self.assertNotIn("logical_block_size", plain)
+        native = next(a for a in self.vm(sector_size=4096, physical_sector_size=4096).command()
+                      if a.startswith("nvme,"))
+        self.assertIn("logical_block_size=4096,physical_block_size=4096", native)
+        sata = next(a for a in self.vm(controller="sata", sector_size=4096).command() if a.startswith("ide-hd,"))
+        self.assertIn("logical_block_size=4096,physical_block_size=4096", sata)
+
+
+class DiskSafetyTests(unittest.TestCase):
+    """list_disks() with a fake lsblk: every reason to refuse a disk must be found."""
+
+    def disks(self, devices, btrfs=(), boot_esp=None, busy=None, holders=None):
+        from unittest import mock
+
+        from wvi import disks
+        with mock.patch.object(disks, "_lsblk", return_value=devices), \
+                mock.patch.object(disks, "_by_id", side_effect=lambda n: f"/dev/disk/by-id/x-{n}"), \
+                mock.patch.object(disks, "_swaps", return_value=set()), \
+                mock.patch.object(disks, "_btrfs_members", return_value=set(btrfs)), \
+                mock.patch.object(disks, "_boot_esp_guid", return_value=boot_esp), \
+                mock.patch.object(disks, "_holders", side_effect=lambda n: (holders or {}).get(n, [])), \
+                mock.patch.object(disks, "_behind_vmd", return_value=False), \
+                mock.patch.object(disks, "kernel_busy", return_value=busy):
+            return disks.list_disks()
+
+    @staticmethod
+    def dev(name="sda", parts=(), **kw):
+        d = {"name": name, "path": f"/dev/{name}", "type": "disk", "size": 500 * 10**9, "model": "M",
+             "serial": "S", "tran": "sata", "rm": False, "ro": False, "mountpoints": [None], "fstype": None,
+             "log-sec": 512, "phy-sec": 512}
+        d.update(kw)
+        d["children"] = [{"name": f"{name}{i}", "path": f"/dev/{name}{i}", "type": "part", "size": 10**9,
+                          "mountpoints": [None], "fstype": None, "partuuid": None, **p}
+                         for i, p in enumerate(parts, 1)]
+        return d
+
+    def test_free_disk_is_usable(self):
+        (d,) = self.disks([self.dev(parts=[{"fstype": "ntfs"}])], busy=False)
+        self.assertTrue(d.usable)
+        self.assertTrue(any("will be erased" in w for w in d.warnings))
+
+    def test_mounted_partition(self):
+        (d,) = self.disks([self.dev(parts=[{"mountpoints": ["/home"]}])])
+        self.assertTrue(any("mounted at /home" in p for p in d.problems))
+
+    def test_second_device_of_mounted_btrfs(self):
+        # lsblk shows no mount point on the other members of a multi-device btrfs
+        (d,) = self.disks([self.dev(parts=[{"fstype": "btrfs"}])], btrfs={"sda1"}, busy=None)
+        self.assertEqual(d.problems, ["part of a mounted btrfs filesystem"])
+
+    def test_holders(self):
+        (d,) = self.disks([self.dev(parts=[{"fstype": "LVM2_member"}])], holders={"sda1": ["dm-3"]})
+        self.assertTrue(any("in use by dm-3" in p for p in d.problems))
+
+    def test_kernel_says_busy(self):
+        (d,) = self.disks([self.dev(parts=[{"fstype": "zfs_member"}])], busy=True)
+        self.assertEqual(d.problems, ["in use (the kernel reports the device as busy)"])
+
+    def test_boot_esp(self):
+        guid = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+        (d,) = self.disks([self.dev(parts=[{"fstype": "vfat", "partuuid": guid.upper()}])], boot_esp=guid)
+        self.assertEqual(d.problems, ["holds the EFI partition this system boots from"])
+
+    def test_inactive_pool_member_warns(self):
+        (d,) = self.disks([self.dev(parts=[{"fstype": "LVM2_member"}])], busy=False)
+        self.assertTrue(d.usable)
+        self.assertTrue(any("LVM" in w for w in d.warnings))
+
+    def test_sector_sizes(self):
+        (d,) = self.disks([self.dev(**{"log-sec": 4096, "phy-sec": 4096})], busy=False)
+        self.assertEqual((d.sector_size, d.physical_sector_size), (4096, 4096))
 
 
 class WIMXMLTests(unittest.TestCase):

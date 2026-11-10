@@ -33,6 +33,15 @@ class DetectionTests(unittest.TestCase):
         self.assertEqual((label, loader), ("ubuntu", "\\EFI\\ubuntu\\shimx64.efi"))
         self.assertEqual(b.kind_from_loader(loader), "grub")
 
+    def test_loader_path_ends_at_efi(self):
+        # Firmware-made entries carry optional data right after the file name
+        line = ("BootCurrent: 0006\nBoot0006* UEFI OS\tHD(1,GPT,aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa,0x800,0x800000)"
+                "/\\EFI\\BOOT\\BOOTX64.EFI0000424f\n")
+        self.assertEqual(b.parse_current(line)[2], "\\EFI\\BOOT\\BOOTX64.EFI")
+        spaced = ("BootCurrent: 0001\nBoot0001* X\tHD(1,GPT,aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa,0x800,0x800000)"
+                  "/\\EFI\\My Dir\\grubx64.efi\n")
+        self.assertEqual(b.parse_current(spaced)[2], "\\EFI\\My Dir\\grubx64.efi")
+
     def test_kind_from_name(self):
         cases = {
             "\\EFI\\LIMINE\\LIMINE_X64.EFI": "limine",
@@ -63,8 +72,8 @@ class LimineTests(unittest.TestCase):
 
     def test_block_is_replaced_not_duplicated(self):
         conf = "timeout: 5\n\n/Linux\n    protocol: linux\n"
-        once = b.replace_block(conf, b.limine_block(TARGET))
-        twice = b.replace_block(once, b.limine_block(TARGET))
+        once = b.replace_block(conf, TARGET.esp_guid, b.limine_block(TARGET))
+        twice = b.replace_block(once, TARGET.esp_guid, b.limine_block(TARGET))
         self.assertEqual(once, twice)
         self.assertEqual(twice.count("/Windows 11 Pro"), 1)
         self.assertIn(f"path: guid({TARGET.esp_guid}):/EFI/Microsoft/Boot/bootmgfw.efi", once)
@@ -72,7 +81,23 @@ class LimineTests(unittest.TestCase):
 
     def test_block_removal(self):
         conf = "timeout: 5\n"
-        self.assertEqual(b.replace_block(b.replace_block(conf, b.limine_block(TARGET)), None), conf)
+        added = b.replace_block(conf, TARGET.esp_guid, b.limine_block(TARGET))
+        self.assertEqual(b.replace_block(added, TARGET.esp_guid, None), conf)
+
+    def test_other_windows_entries_are_kept(self):
+        other = b.WindowsTarget("Windows 10", "cccccccc-cccc-4ccc-8ccc-cccccccccccc", "1111-2222")
+        conf = b.replace_block("timeout: 5\n", TARGET.esp_guid, b.limine_block(TARGET))
+        conf = b.replace_block(conf, other.esp_guid, b.limine_block(other))
+        for _ in range(3):  # re-adding one entry must not touch the other, nor pile up blank lines
+            conf = b.replace_block(conf, TARGET.esp_guid, b.limine_block(TARGET))
+        self.assertEqual(conf.count("/Windows 11 Pro"), 1)
+        self.assertEqual(conf.count("/Windows 10"), 1)
+        self.assertNotIn("\n\n\n", conf)
+
+    def test_unterminated_block_removes_nothing(self):
+        conf = b.replace_block("timeout: 5\n", TARGET.esp_guid, b.limine_block(TARGET))
+        broken = conf.replace(f"{b.MARK_END} {TARGET.esp_guid}\n", "") + "/Linux\n    protocol: linux\n"
+        self.assertIn("/Linux", b.replace_block(broken, TARGET.esp_guid, None))
 
 
 class GrubTests(unittest.TestCase):

@@ -17,6 +17,7 @@ from .udf import UDFError, UDFImage
 WIM_MAGIC = b"MSWIM\0\0\0"
 ARCH_NAMES = {0: "x86", 5: "arm", 9: "x64", 12: "arm64"}
 INSTALL_IMAGES = ("sources/install.wim", "sources/install.esd")
+BOM = chr(0xFEFF)
 
 
 class NotWindowsISO(Exception):
@@ -82,14 +83,22 @@ def inspect_iso(path: str | Path) -> WindowsISO:
         for image_path in INSTALL_IMAGES:
             try:
                 entry = udf.lookup(image_path)
+                header = udf.read(entry, 0, 208)
+                if header[:8] != WIM_MAGIC:
+                    raise NotWindowsISO(f"{path}: {image_path} is not a WIM file")
+                # rhXmlData: 8-byte size (low 56 bits) + flags, 8-byte offset, 8-byte original size
+                size_flags, offset, _ = struct.unpack_from("<QQQ", header, 72)
+                size = size_flags & 0x00FFFFFFFFFFFFFF
+                if size > 64 * 2**20:
+                    raise NotWindowsISO(f"{path}: implausible metadata size in {image_path}")
+                xml_text = udf.read(entry, offset, size).decode("utf-16-le").lstrip(BOM)
+                editions = parse_wim_xml(xml_text)
             except FileNotFoundError:
                 continue
-            header = udf.read(entry, 0, 208)
-            if header[:8] != WIM_MAGIC:
-                raise NotWindowsISO(f"{image_path} is not a WIM file")
-            # rhXmlData: 8-byte size (low 56 bits) + flags, 8-byte offset, 8-byte original size
-            size_flags, offset, _ = struct.unpack_from("<QQQ", header, 72)
-            xml_raw = udf.read(entry, offset, size_flags & 0x00FFFFFFFFFFFFFF)
-            xml_text = xml_raw.decode("utf-16-le").lstrip("﻿")
-            return WindowsISO(path, image_path, parse_wim_xml(xml_text))
+            except (UDFError, struct.error, ValueError, IndexError, ET.ParseError) as e:
+                # a damaged or unusual image: report it instead of crashing
+                raise NotWindowsISO(f"{path}: cannot read {image_path} ({e})") from None
+            if not editions:
+                raise NotWindowsISO(f"{path}: {image_path} lists no Windows edition")
+            return WindowsISO(path, image_path, editions)
     raise NotWindowsISO(f"{path}: no sources/install.wim or install.esd")

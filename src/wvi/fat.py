@@ -62,7 +62,7 @@ class FAT32:
             attr = e[11]
             if attr == 0x0F:  # long file name fragment, stored last-first
                 part = (e[1:11] + e[14:26] + e[28:32]).decode("utf-16-le", "ignore")
-                lfn.insert(0, part.split("\0")[0].rstrip("￿"))
+                lfn.insert(0, part.split("\0")[0].rstrip(chr(0xFFFF)))
                 continue
             if attr & 0x08:  # volume label
                 lfn = []

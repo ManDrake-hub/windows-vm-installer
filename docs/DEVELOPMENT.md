@@ -26,6 +26,8 @@ QEMU 11.1, edk2-ovmf 202608 and swtpm 0.10.
   mean the installer is loading, target writes mean it is installing. No screen
   scraping is needed; screenshots are only kept for diagnostics.
 - `-no-reboot` turns the installer's first reboot into a QEMU exit (code 0).
+- Paths in QEMU option lists need commas doubled (`file=/a,,b.iso`): a comma
+  in an ISO name would otherwise be parsed as the next option.
 
 ## Progress
 
@@ -33,6 +35,22 @@ QEMU 11.1, edk2-ovmf 202608 and swtpm 0.10.
   25 GiB for Pro): files shared between editions and hard links are counted
   more than once in the WIM metadata. `cli.WRITE_RATIO` uses 0.58.
 - With the target on an NVMe SSD the first phase takes a few minutes.
+
+## Target disk safety
+
+- `lsblk` shows a mount point on one device only: the other members of a
+  multi-device btrfs filesystem look unused. Members of mounted btrfs
+  filesystems are listed in `/sys/fs/btrfs/*/devices/`.
+- The authoritative check is the kernel's: opening the whole disk with
+  `O_EXCL` fails with `EBUSY` when the disk or any partition is claimed (mounted
+  filesystem, swap, device mapper, md, btrfs, ZFS, bcache). It needs root, so the
+  GUI list relies on the sysfs checks and the installer repeats everything as
+  root right before starting the VM.
+- **4K-native disks**: the virtual disk must have the real logical sector size
+  (`logical_block_size=4096` on the QEMU device), or Setup writes a GPT laid out
+  for 512-byte sectors that the real disk cannot be read with.
+- Kernel names (`nvme0n1`…) change between boots: disks are referred to by
+  `/dev/disk/by-id`.
 
 ## Verifying the result
 
@@ -96,6 +114,15 @@ QEMU 11.1, edk2-ovmf 202608 and swtpm 0.10.
     out empty, so end-to-end runs check widget state, not pictures;
   - `emblem-ok-symbolic` is not in the Adwaita icon theme any more:
     `object-select-symbolic` is.
+- Reading the installer's output with `Gio.DataInputStream`: in PyGObject
+  `read_line_finish()` returns `b""` both for an empty line and at the end of the
+  stream, so the end cannot be detected with it; `read_line_finish_utf8()`
+  returns `None` at the end. The process can exit before its last lines are
+  delivered: report the exit only after both pipes reached their end.
+- Closing the window closes the pipes; the installer then stops the VM at its
+  next event. The window asks for confirmation while an installation runs.
+- efibootmgr prints firmware-made entries with optional data glued to the
+  loader path (`\EFI\BOOT\BOOTX64.EFI0000424f`): cut the path at `.efi`.
 
 ## Testing the second phase in a VM
 

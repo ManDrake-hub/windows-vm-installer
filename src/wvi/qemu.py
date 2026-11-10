@@ -41,6 +41,12 @@ class Firmware:
     code: str
     vars_template: str
     fmt: str = "raw"
+    vars_fmt: str = "raw"
+
+
+def opt(path) -> str:
+    """A path as a value in a QEMU option list, where commas separate options."""
+    return str(path).replace(",", ",,")
 
 
 def find_firmware() -> Firmware | None:
@@ -63,7 +69,8 @@ def find_firmware() -> Firmware | None:
                     and mapping.get("device") == "flash" and mapping.get("mode", "split") == "split"
                     and any(m.startswith("pc-q35") for m in machines)
                     and code and nvram and os.path.exists(code) and os.path.exists(nvram)):
-                return Firmware(code, nvram, mapping["executable"].get("format", "raw"))
+                return Firmware(code, nvram, mapping["executable"].get("format", "raw"),
+                                mapping["nvram-template"].get("format", "raw"))
     for code, nvram in KNOWN_FIRMWARE:
         if os.path.exists(code) and os.path.exists(nvram):
             return Firmware(code, nvram)
@@ -76,7 +83,14 @@ class QMP:
     def __init__(self, path: Path, timeout: float = 10):
         self.sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         self.sock.settimeout(timeout)
-        self.sock.connect(str(path))
+        for attempt in range(20):  # the socket file appears slightly before QEMU listens on it
+            try:
+                self.sock.connect(str(path))
+                break
+            except (ConnectionRefusedError, FileNotFoundError):
+                if attempt == 19:
+                    raise
+                time.sleep(0.1)
         self.f = self.sock.makefile("rwb")
         self._read()  # greeting
         self.cmd("qmp_capabilities")
@@ -86,7 +100,10 @@ class QMP:
             line = self.f.readline()
             if not line:
                 raise VMError("QEMU closed the QMP connection")
-            msg = json.loads(line)
+            try:
+                msg = json.loads(line)
+            except ValueError:  # QEMU exited in the middle of a line
+                raise VMError("QEMU closed the QMP connection") from None
             if "event" not in msg:
                 return msg
 
@@ -117,11 +134,14 @@ class Progress:
 
 class InstallerVM:
     def __init__(self, workdir: Path, iso: Path, answer_iso: Path, target: Path, controller: str,
-                 firmware: Firmware, memory_mb: int = 4096, cpus: int = 4, show: bool = False):
+                 firmware: Firmware, memory_mb: int = 4096, cpus: int = 4, show: bool = False,
+                 sector_size: int = 512, physical_sector_size: int = 512):
         if controller not in ("nvme", "sata"):
             raise ValueError(f"unsupported controller {controller!r}")
         self.workdir, self.iso, self.answer_iso, self.target = workdir, iso, answer_iso, target
         self.controller, self.firmware = controller, firmware
+        self.sector_size = sector_size
+        self.physical_sector_size = max(physical_sector_size, sector_size)
         self.memory_mb, self.cpus, self.show = memory_mb, cpus, show
         self.qemu: subprocess.Popen | None = None
         self.swtpm: subprocess.Popen | None = None
@@ -134,25 +154,29 @@ class InstallerVM:
         w = self.workdir
         disk_dev = ("nvme,drive=target,serial=WVI-TARGET" if self.controller == "nvme"
                     else "ide-hd,drive=target,bus=ide.0")
+        if self.sector_size != 512:
+            # 4K-native disk: the partition table must be laid out for the real sector size
+            disk_dev += (f",logical_block_size={self.sector_size}"
+                         f",physical_block_size={self.physical_sector_size}")
         return [
             "qemu-system-x86_64", "-name", "windows-vm-installer",
             "-enable-kvm", "-machine", "q35,smm=on", "-cpu", "host",
             "-smp", str(self.cpus), "-m", str(self.memory_mb),
             "-global", "driver=cfi.pflash01,property=secure,value=on",
-            "-drive", f"if=pflash,format={self.firmware.fmt},unit=0,readonly=on,file={self.firmware.code}",
-            "-drive", f"if=pflash,format={self.firmware.fmt},unit=1,file={w / 'OVMF_VARS.fd'}",
-            "-chardev", f"socket,id=chrtpm,path={w / 'swtpm.sock'}",
+            "-drive", f"if=pflash,format={self.firmware.fmt},unit=0,readonly=on,file={opt(self.firmware.code)}",
+            "-drive", f"if=pflash,format={self.firmware.vars_fmt},unit=1,file={opt(w / 'OVMF_VARS.fd')}",
+            "-chardev", f"socket,id=chrtpm,path={opt(w / 'swtpm.sock')}",
             "-tpmdev", "emulator,id=tpm0,chardev=chrtpm", "-device", "tpm-tis,tpmdev=tpm0",
-            "-drive", f"file={self.target},format=raw,if=none,id=target,cache=none,discard=unmap",
+            "-drive", f"file={opt(self.target)},format=raw,if=none,id=target,cache=none,discard=unmap",
             "-device", f"{disk_dev},bootindex=1",
-            "-drive", f"file={self.iso},format=raw,media=cdrom,readonly=on,if=none,id=iso",
+            "-drive", f"file={opt(self.iso)},format=raw,media=cdrom,readonly=on,if=none,id=iso",
             "-device", "ide-cd,drive=iso,bus=ide.2,bootindex=0",
-            "-drive", f"file={self.answer_iso},format=raw,media=cdrom,readonly=on,if=none,id=answer",
+            "-drive", f"file={opt(self.answer_iso)},format=raw,media=cdrom,readonly=on,if=none,id=answer",
             "-device", "ide-cd,drive=answer,bus=ide.3",
             "-device", "qemu-xhci", "-device", "usb-tablet",
             "-nic", "none", "-vga", "std",
             "-display", "gtk" if self.show else "none",
-            "-qmp", f"unix:{w / 'qmp.sock'},server,nowait",
+            "-qmp", f"unix:{opt(w / 'qmp.sock')},server,nowait",
             "-no-reboot",
         ]
 
@@ -217,12 +241,13 @@ class InstallerVM:
         return None
 
     def run(self, on_progress: Callable[[Progress], None], boot_timeout: float = 240,
-            stall_timeout: float = 900, total_timeout: float = 5400) -> None:
+            load_timeout: float = 600, stall_timeout: float = 900, total_timeout: float = 5400) -> None:
         """Drive the VM until the installer's first reboot. Raises VMError on problems."""
         assert self.qemu and self.qmp
         start = time.monotonic()
         last_written, last_change = 0, start
         last_shot = start
+        loading_since = start
         phase = "firmware"
         try:
             for now, stats in self._poll(start):
@@ -233,10 +258,13 @@ class InstallerVM:
                 written = stats.get("target", {}).get("wr_bytes", 0)
                 if phase == "firmware":
                     if iso_read >= BOOT_READ_THRESHOLD:
-                        phase = "loading"
+                        phase, loading_since = "loading", now
                     else:
                         # Answer "Press any key to boot from CD or DVD" until the ISO is really read
-                        self.qmp.cmd("send-key", keys=[{"type": "qcode", "data": "spc"}])
+                        try:
+                            self.qmp.cmd("send-key", keys=[{"type": "qcode", "data": "spc"}])
+                        except OSError:
+                            raise VMError("lost the connection to QEMU") from None
                         if now - start > boot_timeout:
                             raise VMError("the VM did not boot from the Windows ISO")
                 if phase == "loading" and written > 0:
@@ -245,8 +273,8 @@ class InstallerVM:
                     last_written, last_change = written, now
                 elif phase == "installing" and now - last_change > stall_timeout:
                     raise VMError("the installer stopped writing to the disk: it may be waiting for input")
-                if phase == "loading" and now - start > boot_timeout + stall_timeout:
-                    raise VMError("the installer never started writing to the disk")
+                if phase == "loading" and now - loading_since > load_timeout:
+                    raise VMError("Windows Setup did not start installing: it may be showing an error")
                 if now - start > total_timeout:
                     raise VMError("the installation took too long")
                 on_progress(Progress(now - start, written, phase))
