@@ -24,7 +24,8 @@ GRUB_SCRIPT_PREFIX = "41_windows-vm-installer"
 BACKUP_DIR = Path("/var/lib/windows-vm-installer/backups")
 WINDOWS_LOADER = "/EFI/Microsoft/Boot/bootmgfw.efi"
 LIMINE_HASH_MARKER = b"++CONFIG_B2SUM_SIGNATURE++"
-DEVICE_PATH_RE = re.compile(r"HD\(\d+,GPT,([0-9a-fA-F-]+),[^)]*\)/(?:File\()?(\\[^)\t\s]+)")
+# The loader path ends at ".efi": firmware-made entries append optional data right after it
+DEVICE_PATH_RE = re.compile(r"HD\(\d+,GPT,([0-9a-fA-F-]+),[^)]*\)/(?:File\()?(\\[^)\t]*?\.efi)", re.IGNORECASE)
 
 
 @dataclass
@@ -149,23 +150,34 @@ def limine_config_enrolled(binary: bytes) -> bool:
     return digest.strip(b"0") != b""
 
 
+def marked(key: str, body: str) -> str:
+    """Wrap an entry in comment markers; the key (the Windows ESP GUID) identifies it."""
+    return f"{MARK_BEGIN} {key}\n{body.rstrip(chr(10))}\n{MARK_END} {key}\n"
+
+
 def limine_block(t: WindowsTarget) -> str:
-    return (f"{MARK_BEGIN}: {t.title}\n/{t.title}\n    protocol: efi\n"
-            f"    path: guid({t.esp_guid}):{WINDOWS_LOADER}\n{MARK_END}\n")
+    return marked(t.esp_guid, f"/{t.title}\n    protocol: efi\n    path: guid({t.esp_guid}):{WINDOWS_LOADER}")
 
 
-def replace_block(text: str, block: str | None) -> str:
-    """Remove our previous block (if any) and append the new one (if given)."""
-    lines, out, skipping = text.splitlines(keepends=True), [], False
-    for line in lines:
-        if line.startswith(MARK_BEGIN):
-            skipping = True
-            continue
-        if skipping:
-            if line.startswith(MARK_END):
-                skipping = False
-            continue
-        out.append(line)
+def replace_block(text: str, key: str, block: str | None) -> str:
+    """Remove the block previously added for this key (if any) and append the new one (if given).
+
+    Blocks of other Windows installations are left alone. A begin marker
+    without its end marker is not trusted: nothing is removed in that case.
+    """
+    begin, end = f"{MARK_BEGIN} {key}", f"{MARK_END} {key}"
+    lines = text.splitlines(keepends=True)
+    out, i = [], 0
+    while i < len(lines):
+        if lines[i].rstrip() == begin:
+            close = next((j for j in range(i + 1, len(lines)) if lines[j].rstrip() == end), None)
+            if close is not None:
+                if out and not out[-1].strip():
+                    out.pop()  # the blank line that was added before the block
+                i = close + 1
+                continue
+        out.append(lines[i])
+        i += 1
     result = "".join(out).rstrip("\n") + "\n"
     if block:
         result += "\n" + block
@@ -231,7 +243,8 @@ def _plan_limine(bm: BootManager, t: WindowsTarget) -> Plan:
             conf = _find_limine_conf(bm)
             if conf and t.esp_guid.lower() in conf.read_text(errors="replace").lower():
                 return f"limine-update added '{t.title}' to the Limine menu"
-            return "limine-update ran, but the Windows entry is not in limine.conf: check FIND_BOOTLOADERS"
+            return ("limine-update ran, but Windows is not in limine.conf: it lists the systems that have a "
+                    "UEFI boot entry, so create one for Windows and run limine-update again")
         return Plan("Limine is managed by limine-entry-tool: regenerate its menu",
                     ["run limine-update (it adds the UEFI entries of other systems to limine.conf)"], run_update)
 
@@ -248,7 +261,7 @@ def _plan_limine(bm: BootManager, t: WindowsTarget) -> Plan:
 
     def apply() -> str:
         saved = backup(conf)
-        conf.write_text(replace_block(conf.read_text(), limine_block(t)))
+        conf.write_text(replace_block(conf.read_text(), t.esp_guid, limine_block(t)))
         return f"added '{t.title}' to {conf} (backup: {saved})"
     return Plan("Limine: add a Windows entry", [f"append an entry to {conf}"], apply)
 
@@ -286,12 +299,13 @@ def _plan_refind(bm: BootManager, t: WindowsTarget) -> Plan:
         return Plan("rEFInd scans every disk by default: Windows should appear in its menu automatically.")
     if refind_scans_internal(conf.read_text(errors="replace")):
         return Plan("rEFInd scans internal disks: Windows will appear in its menu automatically.")
-    block = (f"{MARK_BEGIN}: {t.title}\nmenuentry \"{t.title}\" {{\n    volume {t.esp_guid}\n"
-             f"    loader {WINDOWS_LOADER.replace('/', chr(92))}\n}}\n{MARK_END}\n")
+    title = t.title.replace('"', "")
+    block = marked(t.esp_guid, f"menuentry \"{title}\" {{\n    volume {t.esp_guid}\n"
+                               f"    loader {WINDOWS_LOADER.replace('/', chr(92))}\n}}")
 
     def apply() -> str:
         saved = backup(conf)
-        conf.write_text(replace_block(conf.read_text(), block))
+        conf.write_text(replace_block(conf.read_text(), t.esp_guid, block))
         return f"added '{t.title}' to {conf} (backup: {saved})"
     return Plan("rEFInd does not scan internal disks: add a manual Windows entry",
                 [f"append a menuentry to {conf}"], apply)

@@ -69,5 +69,36 @@ class GUIChoicesTests(unittest.TestCase):
         self.assertEqual(argv[-3:], ["-m", "wvi", "restore-boot"])
 
 
+class GUIBackendTests(unittest.TestCase):
+    """Backend.run must deliver every event before it reports the exit."""
+
+    def setUp(self):
+        try:
+            from wvi import gui
+        except (ImportError, ValueError) as e:
+            self.skipTest(f"GTK 4 / libadwaita not available: {e}")
+        self.gui = gui
+
+    def test_events_arrive_before_exit(self):
+        from gi.repository import GLib
+
+        for _ in range(15):  # the old code lost this race now and then
+            seen: list = []
+            loop = GLib.MainLoop()
+
+            def on_exit(status, stderr_tail):
+                seen.append(("exit", status))
+                loop.quit()
+
+            job = self.gui.Job(lambda ev: seen.append(("event", ev["event"])), lambda line: None, on_exit)
+            # test-image mode runs the installer unprivileged; the missing ISO makes it fail at once
+            self.gui.Backend(test_image="/nonexistent/t.img").run(
+                ["install", "--iso", "/nonexistent.iso", "--edition", "x", "--accept-eula",
+                 "--test-image", "/nonexistent/t.img"], job)
+            GLib.timeout_add_seconds(20, loop.quit)
+            loop.run()
+            self.assertEqual(seen, [("event", "error"), ("exit", 1)])
+
+
 if __name__ == "__main__":
     unittest.main()

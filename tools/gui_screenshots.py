@@ -94,7 +94,7 @@ def drive(out: Path, iso: str | None, test_image: str | None, scheme: str) -> in
             return False
 
         def boot_menu_summary(self):
-            return "grub: GRUB: add a Windows entry"
+            return "Detected boot manager: GRUB"
 
         def run(self, args, job):
             total = int(26_600_000_000 * WRITE_RATIO)

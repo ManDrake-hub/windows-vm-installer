@@ -60,7 +60,10 @@ def read_gpt(path: str | Path, sector_size: int | None = None) -> GPT:
             raise GPTError(f"{path}: no GPT header")
 
         hsize, hcrc = struct.unpack_from("<II", header, 12)
-        check = bytearray(header[:hsize])
+        if not 92 <= hsize <= ss:
+            raise GPTError(f"{path}: invalid GPT header size")
+        f.seek(ss)
+        check = bytearray(f.read(hsize))
         check[16:20] = b"\0\0\0\0"
         if zlib.crc32(check) != hcrc:
             raise GPTError(f"{path}: GPT header checksum mismatch")

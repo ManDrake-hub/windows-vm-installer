@@ -110,6 +110,8 @@ def restore_order(state_file: Path = STATE_FILE) -> list[str]:
     order += [n for n in state.order if n not in order and n != windows]
     if windows in state.entries:
         order.append(windows)
+    if not order:
+        raise EFIError("no boot entry is left to put in the boot order")
     set_order(order)
     state_file.unlink()
     return order

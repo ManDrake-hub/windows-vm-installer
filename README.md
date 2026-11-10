@@ -21,8 +21,10 @@ activation.
 
 - **No USB stick, no firmware settings.**
 - **Your Linux disk is safe**: the installer cannot see it, so it cannot erase
-  it or put its boot files on it. Disks that are mounted, used as swap or by
-  LUKS/LVM/RAID are refused.
+  it or put its boot files on it. A disk is refused when it is mounted, used as
+  swap, part of LUKS/LVM/RAID, a member of a mounted btrfs filesystem or a ZFS
+  pool, holds the EFI partition the system boots from, or when the kernel
+  reports it as busy; the check is repeated right before anything is written.
 - **Windows gets its own EFI system partition** on its own disk, instead of
   writing into Linux's ESP.
 - **Pick the edition you are licensed for**: if your firmware carries an OEM
@@ -105,7 +107,7 @@ registry.
 
 - x86-64 PC booted in UEFI mode, with virtualization enabled (`/dev/kvm`)
 - Python 3.10+, QEMU (`qemu-system-x86_64`), OVMF/edk2 firmware, `swtpm`,
-  `efibootmgr`, util-linux — all common distro packages, e.g. on Arch:
+  `efibootmgr`, util-linux 2.37+ — all common distro packages, e.g. on Arch:
   `pacman -S qemu-desktop edk2-ovmf swtpm efibootmgr`
 - For the graphical installer: PyGObject with GTK 4 and libadwaita 1.5+
   (`pacman -S python-gobject gtk4 libadwaita`) and a running **polkit
