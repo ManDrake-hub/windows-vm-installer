@@ -107,11 +107,16 @@ QEMU 11.1, edk2-ovmf 202608 and swtpm 0.10.
   - a toplevel window cannot paint itself into a texture: paint its content
     and draw the window background first (otherwise text in the dark style is
     white on a transparent background);
-  - without a browser attached, Broadway barely advances the frame clock:
-    animations stay halfway (empty pages after a push, unchecked check
-    buttons), so the tool disables `gtk-enable-animations` and waits until the
-    visible page has a size; after a long idle wait a capture can still come
-    out empty, so end-to-end runs check widget state, not pictures;
+  - without a browser attached, Broadway rarely runs the frame clock, and both
+    the restyling after a state change and the layout of a new page wait for
+    it. Captures then come out empty, or show a stale state (a radio just
+    selected still unselected). The tool disables `gtk-enable-animations`, and
+    before each capture emits the frame clock's `update` and `layout` signals
+    (the window restyles and lays out on `layout`) and allocates the content;
+  - never trust a capture blindly: the tool checks that the visible page is the
+    expected one and that the picture is not a single colour, retries, and
+    fails loudly otherwise. The rendering is byte-for-byte deterministic, so
+    two runs must produce identical files;
   - `emblem-ok-symbolic` is not in the Adwaita icon theme any more:
     `object-select-symbolic` is.
 - Reading the installer's output with `Gio.DataInputStream`: in PyGObject
