@@ -21,6 +21,8 @@ import time
 from pathlib import Path
 
 DISPLAY = ":7"
+MIN_COLORS = 40  # sampled colours in a drawn page (an empty one has 1, the plainest page about 90)
+MAX_TRIES = 30  # ticks to wait for a page before giving up
 
 
 def start_broadway() -> subprocess.Popen:
@@ -124,63 +126,97 @@ def drive(out: Path, iso: str | None, test_image: str | None, scheme: str) -> in
 
     backend = gui.Backend(test_image) if e2e else DemoBackend()
     app = gui.App(backend)
-    state = {"step": 0, "status": 0}
+    state = {"step": 0, "status": 0, "tries": 0}
+    saved: list[str] = []
 
-    def shot(name: str) -> None:
-        # A toplevel cannot paint itself into a texture: paint its content (header bars
-        # included) over the window background, which the toplevel would draw
-        content = app.window.get_content()
-        w, h = content.get_width(), content.get_height()
+    def render(content):
+        """Paint the window content into a texture, without waiting for a frame."""
+        w, h = content.get_width() or 760, content.get_height() or 720
+        # Broadway with no browser attached rarely runs the frame clock, and both the
+        # restyling after a state change (a radio just selected, a button made sensitive)
+        # and the layout of a page just pushed wait for it. Run those phases now: the
+        # window restyles and lays out on the clock's "layout" signal
+        clock = app.window.get_frame_clock()
+        if clock is not None:
+            clock.emit("update")
+            clock.emit("layout")
+        content.allocate(w, h, -1, None)
         found, bg = content.get_style_context().lookup_color("window_bg_color")
         if not found:
             bg = Gdk.RGBA()
             bg.parse("#222226" if scheme == "dark" else "#fafafb")
+        # A toplevel cannot paint itself into a texture: paint its content (header bars
+        # included) over the window background, which the toplevel would draw
         snap = Gtk.Snapshot()
         snap.append_color(bg, Graphene.Rect().init(0, 0, w, h))
         Gtk.WidgetPaintable.new(content).snapshot(snap, w, h)
-        node = snap.to_node()
-        if node is None:
-            raise RuntimeError(f"nothing to render for {name} ({w}x{h})")
         renderer = Gsk.CairoRenderer.new()
         renderer.realize(None)
-        name = name.replace(".png", f"-{scheme}.png")
-        renderer.render_texture(node, Graphene.Rect().init(0, 0, w, h)).save_to_png(str(out / name))
+        texture = renderer.render_texture(snap.to_node(), Graphene.Rect().init(0, 0, w, h))
         renderer.unrealize()
+        return texture
+
+    def distinct_colors(texture) -> int:
+        downloader = Gdk.TextureDownloader.new(texture)
+        downloader.set_format(Gdk.MemoryFormat.R8G8B8A8)
+        data, stride = downloader.download_bytes()
+        raw = data.get_data()
+        return len({raw[y * stride + x * 4: y * stride + x * 4 + 3]
+                    for y in range(0, texture.get_height(), 9) for x in range(0, texture.get_width(), 9)})
+
+    def shot(name: str, title: str) -> bool:
+        """Save the page as PNG; False if the expected page is not fully drawn yet."""
+        if visible_page_name() != title:
+            return False
+        texture = render(app.window.get_content())
+        if distinct_colors(texture) < MIN_COLORS:  # an empty page: only the background
+            return False
+        name = name.replace(".png", f"-{scheme}.png")
+        texture.save_to_png(str(out / name))
+        saved.append(name)
         print("saved", out / name, flush=True)
+        return True
 
     def visible_page_name() -> str:
         return app.window.nav.get_visible_page().get_title()
 
-    def page_ready() -> bool:
-        child = app.window.nav.get_visible_page().get_child()
-        return child is not None and child.get_height() > 0 and child.get_mapped()
-
     def step() -> bool:
+        """One action per tick. A page that is not drawn yet is retried, never saved empty."""
         win = app.window
         s = state["step"]
-        if s in (1, 3, 5, 7, 8, 9) and not page_ready() and state.setdefault("waits", 0) < 10:
-            state["waits"] += 1  # the page just pushed has no size yet: try again later
+
+        def capture(name: str, title: str) -> bool:
+            if shot(name, title):
+                state["tries"] = 0
+                return True
+            state["tries"] += 1
             win.queue_resize()
-            return True
-        state["waits"] = 0
-        state["step"] += 1
+            if state["tries"] > MAX_TRIES:
+                print(f"ERROR: {name} ({title!r}) is still not drawn, giving up", file=sys.stderr, flush=True)
+                state["status"] = 2
+                app.quit()
+            return False
+
         if s == 0:
             win.set_iso(iso or "/home/user/Downloads/Win11_26H2_English_x64.iso")
         elif s == 1:
-            shot("gui-1-iso.png")
+            if not capture("gui-1-iso.png", "Windows VM Installer"):
+                return state["status"] == 0
             win.iso_next.emit("clicked")
         elif s == 2:
             if not e2e:
                 win.disk_checks["nvme1n1"].set_active(True)
         elif s == 3:
-            shot("gui-2-disk.png")
+            if not capture("gui-2-disk.png", "Target disk"):
+                return state["status"] == 0
             _click_next(win)
         elif s == 4:
             combo = win.options_widgets[0]
             names = [combo.get_model().get_string(i) for i in range(combo.get_model().get_n_items())]
             combo.set_selected(names.index("Windows 11 Pro"))
         elif s == 5:
-            shot("gui-3-options.png")
+            if not capture("gui-3-options.png", "Edition and options"):
+                return state["status"] == 0
             _click_next(win)
         elif s == 6:
             accept, confirm = win.summary_widgets
@@ -188,23 +224,27 @@ def drive(out: Path, iso: str | None, test_image: str | None, scheme: str) -> in
             if confirm is not None:
                 confirm.set_text("nvme1n1")
         elif s == 7:
-            shot("gui-4-summary.png")
+            if not capture("gui-4-summary.png", "Summary"):
+                return state["status"] == 0
             win.start_install()
         elif s == 8:
             if e2e and visible_page_name() == "Installing" and win.progress.bar.get_fraction() < 0.4:
-                state["step"] -= 1  # wait for real progress
-                return True
-            shot("gui-5-progress.png")
+                return True  # wait for real progress
+            if visible_page_name() == "Installing" and not capture("gui-5-progress.png", "Installing"):
+                return state["status"] == 0
             if not e2e:
                 backend.finish()
         elif s == 9:
             if e2e and visible_page_name() == "Installing":
-                state["step"] -= 1  # wait for the real installation to end
-                return True
-            shot("gui-6-done.png" if visible_page_name() == "Done" else "gui-6-result.png")
-            state["status"] = 0 if visible_page_name() == "Done" else 1
+                return True  # wait for the real installation to end
+            done = visible_page_name() == "Done"
+            if not capture("gui-6-done.png" if done else "gui-6-result.png", visible_page_name()):
+                return state["status"] == 0
+            if not done:
+                state["status"] = 1
             app.quit()
             return False
+        state["step"] += 1
         return True
 
     def _click_next(win) -> None:
@@ -232,6 +272,9 @@ def drive(out: Path, iso: str | None, test_image: str | None, scheme: str) -> in
 
     app.connect_after("activate", on_activate)
     app.run([sys.argv[0]])
+    if state["status"] == 0 and len(saved) != 6:
+        print(f"ERROR: {len(saved)} of 6 pages were saved", file=sys.stderr)
+        return 2
     return state["status"]
 
 

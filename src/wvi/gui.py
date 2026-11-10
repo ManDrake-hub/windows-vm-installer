@@ -665,6 +665,7 @@ class ProgressView(Gtk.Box):
             self._progress(ev)
         elif kind == "first_phase_done":
             self.bar.set_fraction(1.0)
+            self.spinner.set_spinning(True)
             self.detail.set_label("First phase done, preparing the boot entries")
         elif kind == "boot_entry":
             self.boot_entry = ev
@@ -679,6 +680,9 @@ class ProgressView(Gtk.Box):
         phase, written, total = ev.get("phase"), ev.get("written", 0), ev.get("total", 0)
         self.detail.set_label(PHASES.get(phase, phase or ""))
         minutes, seconds = divmod(int(ev.get("elapsed", 0)), 60)
+        # The spinner shows activity while there is nothing to measure; with a real
+        # percentage the bar is enough (a stopped spinner keeps its space: no jump)
+        self.spinner.set_spinning(not (phase == "installing" and total))
         if phase == "installing" and total:
             pct = min(0.99, written / total)
             self.bar.set_fraction(pct)
