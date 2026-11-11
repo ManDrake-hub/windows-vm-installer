@@ -58,15 +58,19 @@ sudo dpkg -i packaging/debian/debs/windows-vm-installer_*.deb
 temp directory named as a native source package expects, drops in
 `packaging/debian`, and runs `dpkg-buildpackage -b`. Build dependencies:
 `dpkg-dev build-essential debhelper dh-python python3-all python3-build
-python3-pybuild-plugin-pyproject`.
+python3-setuptools python3-wheel pybuild-plugin-pyproject`.
 
 ## Fedora
 
 ```sh
 cd packaging/fedora
+spectool -g -R windows-vm-installer.spec    # downloads Source0 into ~/rpmbuild/SOURCES
 rpmbuild -bb windows-vm-installer.spec
 sudo rpm -i ~/rpmbuild/RPMS/noarch/windows-vm-installer-*.rpm
 ```
+
+`spectool` comes from `rpmdevtools`; alternatively download the `Source0` URL
+into `~/rpmbuild/SOURCES/` by hand.
 
 The spec builds a `noarch` package from the repository snapshot (no release
 tags yet); `%pyproject_wheel` builds without isolation, so `python3-setuptools`

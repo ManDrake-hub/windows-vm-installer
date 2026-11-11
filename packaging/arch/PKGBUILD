@@ -24,6 +24,8 @@ depends=(
 makedepends=(
   python-build
   python-pip
+  python-setuptools
+  python-wheel
 )
 optdepends=(
   "gtk4: graphical installer"
@@ -37,7 +39,12 @@ sha256sums=SKIP
 
 build() {
   cd "$pkgname"
-  python -m build --wheel --outdir dist
+  python -m build --wheel --no-isolation --outdir dist
+}
+
+check() {
+  cd "$pkgname"
+  PYTHONPATH=src python -m unittest discover -s tests
 }
 
 package() {
