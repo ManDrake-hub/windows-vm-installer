@@ -1,0 +1,50 @@
+# Maintainer: Geraldino Mandragora <mandrake@wholetech.eu>
+#
+# Builds from the git repository (the project has no release tags yet).
+# For a tagged release, replace the source with:
+#   source=("https://github.com/ManDrake-hub/windows-vm-installer/archive/refs/tags/v${pkgver}.tar.gz")
+# and fill in sha256sums.
+
+pkgname=windows-vm-installer
+pkgver=0.1.0.dev0
+pkgrel=1
+pkgdesc="Install Windows onto a physical disk from Linux, through a hidden virtual machine"
+arch=(x86_64)
+url="https://github.com/ManDrake-hub/windows-vm-installer"
+license=(GPL-3.0-or-later)
+
+depends=(
+  python
+  qemu
+  edk2-ovmf
+  swtpm
+  efibootmgr
+  util-linux
+)
+makedepends=(
+  python-build
+  python-pip
+)
+optdepends=(
+  "gtk4: graphical installer"
+  "libadwaita: graphical installer"
+  "python-gobject: graphical installer (PyGObject bindings)"
+  "limine-entry-tool: add Windows to the Limine menu (CachyOS)"
+  "grub: add Windows to the GRUB menu"
+)
+source=("https://github.com/ManDrake-hub/windows-vm-installer.git")
+sha256sums=SKIP
+
+build() {
+  cd "$pkgname"
+  python -m build --wheel --outdir dist
+}
+
+package() {
+  cd "$pkgname"
+  python -m pip install --no-deps --no-index --root="$pkgdir" --prefix=/usr dist/*.whl
+  # drop bytecode: it is regenerated on first use
+  find "$pkgdir" -name __pycache__ -type d -exec rm -r {} +
+  install -Dm644 "data/io.github.mandrake_hub.WindowsVmInstaller.desktop" \
+    "$pkgdir/usr/share/applications/io.github.mandrake_hub.WindowsVmInstaller.desktop"
+}

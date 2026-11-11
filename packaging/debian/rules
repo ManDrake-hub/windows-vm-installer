@@ -1,0 +1,7 @@
+#!/usr/bin/make -f
+
+# The importable module is wvi, not windows_vm_installer
+export PYBUILD_NAME=wvi
+
+%:
+	dh $@ --buildsystem=pybuild
