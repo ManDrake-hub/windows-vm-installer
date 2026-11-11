@@ -1,0 +1,67 @@
+{
+    "app-id": "io.github.mandrake_hub.WindowsVmInstaller",
+    "runtime": "org.freedesktop.Platform",
+    "runtime-version": "24.08",
+    "sdk": "org.freedesktop.Sdk",
+    "base": "org.freedesktop.Platform",
+    "base-version": "24.08",
+    "command": "windows-vm-installer",
+    "finish-args": [
+        "--share=ipc",
+        "--socket=fallback-x11",
+        "--socket=wayland",
+        "--device=dri",
+        "--filesystem=/dev",
+        "--filesystem=/sys/firmware/efi",
+        "--talk-name=org.freedesktop.PolicyKit1",
+        "--system-talk-name=org.freedesktop.PolicyKit1",
+        "--allow=multiarch"
+    ],
+    "modules": [
+        {
+            "name": "libefi",
+            "url": "https://github.com/rhboot/libefi/releases/download/efi-3.0.9/libefi-3.0.9.tar.gz",
+            "buildsystem": "autotools",
+            "config-opts": [
+                "--prefix=/app"
+            ]
+        },
+        {
+            "name": "efibootmgr",
+            "url": "https://github.com/rhboot/efibootmgr/releases/download/18/efibootmgr-18.tar.gz",
+            "buildsystem": "autotools",
+            "config-opts": [
+                "--prefix=/app"
+            ]
+        },
+        {
+            "name": "libtpms",
+            "url": "https://github.com/stefanberger/libtpms/releases/download/v0.10/libtpms-0.10.tar.gz",
+            "buildsystem": "autotools",
+            "config-opts": [
+                "--prefix=/app"
+            ]
+        },
+        {
+            "name": "swtpm",
+            "url": "https://github.com/stefanberger/swtpm/releases/download/v0.10/swtpm-0.10.tar.gz",
+            "buildsystem": "autotools",
+            "config-opts": [
+                "--prefix=/app"
+            ]
+        },
+        {
+            "name": "windows-vm-installer",
+            "buildsystem": "simple",
+            "sources": [
+                { "type": "dir", "path": "../.." }
+            ],
+            "build-commands": [
+                "find . -name __pycache__ -type d -exec rm -r {} +",
+                "python3 -m pip wheel --no-deps --no-build-isolation -w /tmp/wheels .",
+                "python3 -m pip install --no-deps --no-index --prefix=/app /tmp/wheels/*.whl",
+                "install -Dm644 data/io.github.mandrake_hub.WindowsVmInstaller.desktop /app/share/applications/io.github.mandrake_hub.WindowsVmInstaller.desktop"
+            ]
+        }
+    ]
+}

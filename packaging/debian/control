@@ -1,0 +1,34 @@
+Source: windows-vm-installer
+Section: utils
+Priority: optional
+Maintainer: Geraldino Mandragora <mandrake@wholetech.eu>
+Build-Depends: debhelper-compat (= 13),
+               dh-python,
+               python3-all,
+               python3-build,
+               pybuild-plugin-pyproject
+Standards-Version: 4.6.2
+Homepage: https://github.com/ManDrake-hub/windows-vm-installer
+
+Package: windows-vm-installer
+Architecture: amd64
+Depends: ${shlibs:Depends}, ${misc:Depends}, ${python3:Depends},
+         python3,
+         qemu-system-x86,
+         ovmf,
+         swtpm,
+         efibootmgr,
+         util-linux
+Recommends: python3-gi,
+            gir1.2-gtk-4.0,
+            gir1.2-libadwaita-1.0
+Description: install Windows onto a physical disk from Linux, through a hidden virtual machine
+ The Windows installer runs inside a hidden QEMU/KVM virtual machine that can
+ see only the target disk. When its first phase is done, you reboot into the
+ new disk and Windows finishes the setup on the real hardware: drivers,
+ account, activation.
+ .
+ No USB stick is needed, and the Linux disk is safe: the installer cannot see
+ it. Windows gets its own EFI system partition, the edition is chosen
+ explicitly, and the new system is added to the boot manager (Limine, GRUB,
+ rEFInd).
