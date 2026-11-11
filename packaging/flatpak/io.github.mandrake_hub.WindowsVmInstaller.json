@@ -3,9 +3,7 @@
     "runtime": "org.freedesktop.Platform",
     "runtime-version": "24.08",
     "sdk": "org.freedesktop.Sdk",
-    "base": "org.freedesktop.Platform",
-    "base-version": "24.08",
-    "command": "windows-vm-installer",
+    "command": "windows-vm-installer-flatpak",
     "finish-args": [
         "--share=ipc",
         "--socket=fallback-x11",
@@ -14,8 +12,7 @@
         "--filesystem=/dev",
         "--filesystem=/sys/firmware/efi",
         "--talk-name=org.freedesktop.PolicyKit1",
-        "--system-talk-name=org.freedesktop.PolicyKit1",
-        "--allow=multiarch"
+        "--system-talk-name=org.freedesktop.PolicyKit1"
     ],
     "modules": [
         {
@@ -60,7 +57,10 @@
                 "find . -name __pycache__ -type d -exec rm -r {} +",
                 "python3 -m pip wheel --no-deps --no-build-isolation -w /tmp/wheels .",
                 "python3 -m pip install --no-deps --no-index --prefix=/app /tmp/wheels/*.whl",
-                "install -Dm644 data/io.github.mandrake_hub.WindowsVmInstaller.desktop /app/share/applications/io.github.mandrake_hub.WindowsVmInstaller.desktop"
+                "printf '#!/bin/sh\\nexec windows-vm-installer gui \"$@\"\\n' > /app/bin/windows-vm-installer-flatpak",
+                "chmod 755 /app/bin/windows-vm-installer-flatpak",
+                "mkdir -p /app/share/applications",
+                "sed 's|^Exec=.*|Exec=windows-vm-installer-flatpak|' data/io.github.mandrake_hub.WindowsVmInstaller.desktop > /app/share/applications/io.github.mandrake_hub.WindowsVmInstaller.desktop"
             ]
         }
     ]

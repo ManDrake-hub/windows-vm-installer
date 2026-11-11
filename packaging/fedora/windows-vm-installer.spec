@@ -16,6 +16,7 @@ Source0:        %{github_url}/archive/refs/heads/main.tar.gz
 BuildArch:      noarch
 
 BuildRequires:  python-rpm-macros
+BuildRequires:  pyproject-rpm-macros
 BuildRequires:  python3
 BuildRequires:  python3-build
 BuildRequires:  python3-setuptools
@@ -55,6 +56,9 @@ rEFInd).
 %pyproject_install
 install -Dm644 "data/io.github.mandrake_hub.WindowsVmInstaller.desktop" \
   - "$RPM_BUILD_ROOT/usr/share/applications/io.github.mandrake_hub.WindowsVmInstaller.desktop"
+
+%check
+PYTHONPATH=src python3 -m unittest discover -s tests
 
 %files
 %license LICENSE
