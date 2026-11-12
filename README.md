@@ -14,7 +14,7 @@ activation.
   </picture>
 </p>
 
-> Status: early development (0.1.0.dev0), tested on disk image files. Use at
+> Status: early development (0.1.0), tested on disk image files. Use at
 > your own risk and keep backups: the target disk is erased.
 
 ## Why

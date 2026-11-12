@@ -1,7 +1,7 @@
 # Distribution packages
 
 Packaging for the major Linux distributions, plus AppImage and Flatpak.
-The project is in early development (`0.1.0.dev0`), so these are starting
+The project is in early development (`0.1.0`), so these are starting
 points, but every package is built and tested by CI
 (`.github/workflows/packages.yml`: Arch, Debian and Fedora in containers,
 AppImage in an Arch container, Flatpak on the Ubuntu runner).

@@ -6,7 +6,7 @@
 # and fill in sha256sums.
 
 pkgname=windows-vm-installer
-pkgver=0.1.0.dev0
+pkgver=0.1.0
 pkgrel=1
 pkgdesc="Install Windows onto a physical disk from Linux, through a hidden virtual machine"
 arch=(x86_64)
