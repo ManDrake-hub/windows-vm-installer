@@ -1,0 +1,4 @@
+data/io.github.mandrake_hub.WindowsVmInstaller.desktop usr/share/applications
+data/io.github.mandrake_hub.WindowsVmInstaller.metainfo.xml usr/share/metainfo
+data/icons/hicolor/scalable/apps/io.github.mandrake_hub.WindowsVmInstaller.svg usr/share/icons/hicolor/scalable/apps
+data/icons/hicolor/256x256/apps/io.github.mandrake_hub.WindowsVmInstaller.png usr/share/icons/hicolor/256x256/apps

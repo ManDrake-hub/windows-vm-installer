@@ -21,6 +21,8 @@ BuildRequires:  python3
 BuildRequires:  python3-build
 BuildRequires:  python3-setuptools
 BuildRequires:  python3-wheel
+BuildRequires:  desktop-file-utils
+BuildRequires:  appstream
 
 Requires:       python3
 Requires:       qemu-system-x86
@@ -55,10 +57,18 @@ rEFInd).
 %install
 %pyproject_install
 install -Dm644 "data/io.github.mandrake_hub.WindowsVmInstaller.desktop" \
-  - "$RPM_BUILD_ROOT/usr/share/applications/io.github.mandrake_hub.WindowsVmInstaller.desktop"
+  "$RPM_BUILD_ROOT/usr/share/applications/io.github.mandrake_hub.WindowsVmInstaller.desktop"
+install -Dm644 "data/io.github.mandrake_hub.WindowsVmInstaller.metainfo.xml" \
+  "$RPM_BUILD_ROOT/usr/share/metainfo/io.github.mandrake_hub.WindowsVmInstaller.metainfo.xml"
+install -Dm644 "data/icons/hicolor/scalable/apps/io.github.mandrake_hub.WindowsVmInstaller.svg" \
+  "$RPM_BUILD_ROOT/usr/share/icons/hicolor/scalable/apps/io.github.mandrake_hub.WindowsVmInstaller.svg"
+install -Dm644 "data/icons/hicolor/256x256/apps/io.github.mandrake_hub.WindowsVmInstaller.png" \
+  "$RPM_BUILD_ROOT/usr/share/icons/hicolor/256x256/apps/io.github.mandrake_hub.WindowsVmInstaller.png"
 
 %check
 PYTHONPATH=src python3 -m unittest discover -s tests
+desktop-file-validate "$RPM_BUILD_ROOT/usr/share/applications/io.github.mandrake_hub.WindowsVmInstaller.desktop"
+appstreamcli validate --no-net "$RPM_BUILD_ROOT/usr/share/metainfo/io.github.mandrake_hub.WindowsVmInstaller.metainfo.xml"
 
 %files
 %license LICENSE
@@ -68,6 +78,9 @@ PYTHONPATH=src python3 -m unittest discover -s tests
 %{python3_sitelib}/wvi
 %{python3_sitelib}/windows_vm_installer-*.dist-info
 %{_datadir}/applications/io.github.mandrake_hub.WindowsVmInstaller.desktop
+%{_datadir}/metainfo/io.github.mandrake_hub.WindowsVmInstaller.metainfo.xml
+%{_datadir}/icons/hicolor/scalable/apps/io.github.mandrake_hub.WindowsVmInstaller.svg
+%{_datadir}/icons/hicolor/256x256/apps/io.github.mandrake_hub.WindowsVmInstaller.png
 
 %changelog
 * Thu Nov 12 2026 Geraldino Mandragora <mandrake@wholetech.eu> - 0.1.0.dev0-1

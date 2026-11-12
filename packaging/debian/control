@@ -13,7 +13,7 @@ Standards-Version: 4.6.2
 Homepage: https://github.com/ManDrake-hub/windows-vm-installer
 
 Package: windows-vm-installer
-Architecture: amd64
+Architecture: all
 Depends: ${shlibs:Depends}, ${misc:Depends}, ${python3:Depends},
          python3,
          qemu-system-x86,

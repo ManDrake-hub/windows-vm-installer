@@ -9,6 +9,7 @@ import subprocess
 import sys
 import unittest
 from pathlib import Path
+from unittest import mock
 
 SRC = str(Path(__file__).resolve().parent.parent / "src")
 
@@ -98,6 +99,34 @@ class GUIBackendTests(unittest.TestCase):
             GLib.timeout_add_seconds(20, loop.quit)
             loop.run()
             self.assertEqual(seen, [("event", "error"), ("exit", 1)])
+
+
+class FlatpakBackendTests(unittest.TestCase):
+    """Inside a Flatpak the elevated command goes to the host's CLI."""
+
+    def setUp(self):
+        try:
+            from wvi import gui
+        except (ImportError, ValueError) as e:
+            self.skipTest(f"GTK 4 / libadwaita not available: {e}")
+        self.gui = gui
+        self.env = mock.patch.dict(os.environ, {"FLATPAK_ID": "io.github.mandrake_hub.WindowsVmInstaller"})
+        self.env.start()
+        self.addCleanup(self.env.stop)
+
+    def test_elevated_argv_uses_host_cli(self):
+        argv = self.gui.Backend().argv(["install", "--json"], elevated=True)
+        self.assertEqual(argv[:4], ["flatpak-spawn", "--host", "pkexec", "windows-vm-installer"])
+        self.assertEqual(argv[4:], ["install", "--json"])
+
+    def test_unprivileged_argv_stays_in_sandbox(self):
+        argv = self.gui.Backend().argv(["list-disks", "--json"], elevated=False)
+        self.assertEqual(argv[1:3], ["-m", "wvi"])
+        self.assertNotIn("flatpak-spawn", argv)
+
+    def test_terminal_command_uses_host_cli(self):
+        cmd = self.gui.Backend().terminal_command(["install"])
+        self.assertTrue(cmd.startswith("flatpak-spawn --host pkexec windows-vm-installer"))
 
 
 if __name__ == "__main__":

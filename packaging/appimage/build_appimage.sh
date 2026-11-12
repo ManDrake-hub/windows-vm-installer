@@ -1,46 +1,80 @@
 #!/bin/sh
-# Build an AppImage for windows-vm-installer (experimental starting point).
+# Build a self-contained AppImage: CPython + wvi + PyGObject + GTK 4 / libadwaita.
+# The host still must provide qemu-system-x86_64, OVMF, swtpm, efibootmgr and
+# util-linux: the installer manages real disks and firmware.
 #
 # Usage: packaging/appimage/build_appimage.sh
-#
-# The AppImage bundles the Python runtime and the wvi package. It does NOT
-# bundle the system tools the installer needs at run time; the host must
-# provide:
-#   - qemu-system-x86_64   (QEMU, with KVM support: /dev/kvm)
-#   - OVMF/edk2 firmware    (Secure Boot + SMM)
-#   - swtpm
-#   - efibootmgr
-#   - util-linux (lsblk, partx, udevadm)
-#   - a polkit authentication agent (for the GUI)
-#
-# Needs: appimagecraft  (pip install appimagecraft)
-#
-# Note: appimagecraft flags change between versions; if the invocation below
-# does not match your version, run `appimagecraft --help` and adjust. The key
-# points are: run it from src/ so the wvi package is importable, and point the
-# entrypoint at wvi.cli:main.
+# Build needs: curl, gobject-introspection + cairo headers (for PyGObject),
+# glib2 (glib-compile-schemas), gdk-pixbuf2 (query-loaders).
 
 set -eu
 
 here=$(cd "$(dirname "$0")" && pwd)
 root=$(cd "$here/../.." && pwd)
+work=$(mktemp -d)
+trap 'rm -rf "$work"' EXIT
+A="$work/AppDir"
+PYVER=3.12.7
+PBS=20241016
 
-if ! command -v appimagecraft >/dev/null 2>&1; then
-  echo "appimagecraft is not installed. Install it with: pip install appimagecraft" >&2
-  exit 1
-fi
+mkdir -p "$A/usr"
+curl -fL "https://github.com/astral-sh/python-build-standalone/releases/download/$PBS/cpython-$PYVER+$PBS-x86_64-unknown-linux-gnu-install_only.tar.gz" \
+  | tar -xz -C "$A/usr"
+PY="$A/usr/python/bin/python3"
+export PATH="$A/usr/python/bin:$PATH"
+"$PY" -m pip install --quiet --upgrade pip setuptools wheel meson-python meson ninja
+"$PY" -m pip install --no-build-isolation --no-warn-script-location --prefix="$A/usr" \
+  "$root" "PyGObject>=3.42"
 
-cd "$root/src"
+# GTK 4 / libadwaita stack: ldd closure of the seed libraries
+mkdir -p "$A/usr/lib"
+for l in libgtk-4.so.1 libadwaita-1.so.0 libgdk_pixbuf-2.0.so.0 \
+         libpangocairo-1.0.so.0 libcairo-gobject.so.2 libgirepository-1.0.so.1; do
+  ldd "/usr/lib/$l" | awk '/=> \//{print $3} /^\//{print $1}'
+done | sort -u | grep -Ev 'ld-linux|libc\.so|libm\.so|libpthread|libdl\.so|librt\.so|libresolv' \
+  | while read -r f; do cp -Ln "$f" "$A/usr/lib/"; done
+cp -a /usr/lib/girepository-1.0 "$A/usr/lib/"
+cp -a /usr/lib/gdk-pixbuf-2.0 "$A/usr/lib/"
+mkdir -p "$A/usr/bin"
+cp /usr/bin/gdk-pixbuf-query-loaders "$A/usr/bin/"
 
-appimagecraft \
-  --appname windows-vm-installer \
-  --appversion "$(sed -n "s/^__version__ = ['\"]\(.*\)['\"]/\1/p" wvi/__init__.py)" \
-  --appdescription "Install Windows onto a physical disk from Linux, through a hidden virtual machine" \
-  --author "Geraldino Mandragora" \
-  --copyright "GPL-3.0-or-later" \
-  --license GPL-3.0-or-later \
-  --entrypoint "wvi.cli:main" \
-  --python "python3" \
-  --output-dir "$here"
+mkdir -p "$A/usr/share/glib-2.0" "$A/usr/share/icons" "$A/usr/share/metainfo"
+cp -a /usr/share/glib-2.0/schemas "$A/usr/share/glib-2.0/"
+glib-compile-schemas "$A/usr/share/glib-2.0/schemas"
+cp -a /usr/share/icons/Adwaita /usr/share/icons/hicolor "$A/usr/share/icons/"
+cp "$root/data/io.github.mandrake_hub.WindowsVmInstaller.metainfo.xml" \
+  "$A/usr/share/metainfo/io.github.mandrake_hub.WindowsVmInstaller.appdata.xml"
+cp "$root/data/icons/hicolor/scalable/apps/io.github.mandrake_hub.WindowsVmInstaller.svg" \
+  "$A/usr/share/icons/hicolor/scalable/apps/"
+mkdir -p "$A/usr/share/icons/hicolor/256x256/apps"
+cp "$root/data/icons/hicolor/256x256/apps/io.github.mandrake_hub.WindowsVmInstaller.png" \
+  "$A/usr/share/icons/hicolor/256x256/apps/"
+cp "$root/data/io.github.mandrake_hub.WindowsVmInstaller.desktop" "$A/"
+# also in the standard location: appstreamcli resolves the launchable desktop-id from there
+mkdir -p "$A/usr/share/applications"
+cp "$root/data/io.github.mandrake_hub.WindowsVmInstaller.desktop" "$A/usr/share/applications/"
+# appimagetool builds .DirIcon from a top-level PNG named after Icon=
+cp "$root/data/icons/hicolor/256x256/apps/io.github.mandrake_hub.WindowsVmInstaller.png" "$A/"
 
-echo "done: $(ls "$here"/*.AppImage 2>/dev/null || echo 'see the output above')"
+cat > "$A/AppRun" <<'EOF'
+#!/bin/sh
+HERE=$(dirname "$(readlink -f "$0")")
+export LD_LIBRARY_PATH="$HERE/usr/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+export GI_TYPELIB_PATH="$HERE/usr/lib/girepository-1.0"
+export XDG_DATA_DIRS="$HERE/usr/share:${XDG_DATA_DIRS:-/usr/local/share:/usr/share}"
+export GSETTINGS_SCHEMA_DIR="$HERE/usr/share/glib-2.0/schemas"
+export GDK_PIXBUF_MODULEDIR="$HERE/usr/lib/gdk-pixbuf-2.0/2.10.0/loaders"
+export GDK_PIXBUF_MODULE_FILE="$HERE/usr/lib/gdk-pixbuf-2.0/2.10.0/loaders.cache"
+"$HERE/usr/bin/gdk-pixbuf-query-loaders" > "$GDK_PIXBUF_MODULE_FILE" 2>/dev/null || true
+export PYTHONPATH="$HERE/usr/lib/python3.12/site-packages"
+[ $# -gt 0 ] || set -- gui
+exec "$HERE/usr/python/bin/python3" -m wvi "$@"
+EOF
+chmod 755 "$A/AppRun"
+
+curl -fL -o "$work/appimagetool" \
+  "https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage"
+chmod 755 "$work/appimagetool"
+ARCH=x86_64 "$work/appimagetool" --appimage-extract-and-run "$A" \
+  "$here/windows-vm-installer-x86_64.AppImage"
+echo "done: $here/windows-vm-installer-x86_64.AppImage"

@@ -9,3 +9,8 @@ __pycache__/
 dist/
 build/
 *.egg-info/
+# Packaging artifacts
+*.AppImage
+packaging/debian/debs/
+packaging/flatpak/build/
+packaging/flatpak/repo/
