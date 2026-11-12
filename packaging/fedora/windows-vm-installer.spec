@@ -4,7 +4,7 @@
 %global github_url https://github.com/ManDrake-hub/windows-vm-installer
 
 Name:           windows-vm-installer
-Version:        0.1.0.dev0
+Version:        0.1.0
 Release:        1%{?dist}
 Summary:        Install Windows onto a physical disk from Linux, through a hidden virtual machine
 
@@ -83,5 +83,5 @@ appstreamcli validate --no-net "$RPM_BUILD_ROOT/usr/share/metainfo/io.github.man
 %{_datadir}/icons/hicolor/256x256/apps/io.github.mandrake_hub.WindowsVmInstaller.png
 
 %changelog
-* Thu Nov 12 2026 Geraldino Mandragora <mandrake@wholetech.eu> - 0.1.0.dev0-1
+* Thu Nov 12 2026 Geraldino Mandragora <mandrake@wholetech.eu> - 0.1.0-1
 - Initial packaging
