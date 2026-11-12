@@ -4,8 +4,9 @@
 # util-linux: the installer manages real disks and firmware.
 #
 # Usage: packaging/appimage/build_appimage.sh
-# Build needs: curl, gobject-introspection + cairo headers (for PyGObject),
-# glib2 (glib-compile-schemas), gdk-pixbuf2 (query-loaders).
+# Build needs: curl, gobject-introspection + cairo + pycairo headers (for
+# PyGObject; Arch: python-cairo), glib2 (glib-compile-schemas),
+# gdk-pixbuf2 (query-loaders).
 
 set -eu
 

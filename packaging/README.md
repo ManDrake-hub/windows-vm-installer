@@ -90,10 +90,10 @@ libadwaita stack, so the graphical installer runs on any x86-64 distro without
 Python or GTK installed. It does **not** bundle the system tools the installer
 needs at run time; the host must provide `qemu-system-x86_64`, OVMF firmware,
 `swtpm`, `efibootmgr` and util-linux, plus a polkit authentication agent for
-the GUI. Build needs: curl, `gobject-introspection` and cairo headers (to build
-PyGObject for the bundled Python), `glib-compile-schemas` and
-`gdk-pixbuf-query-loaders`. The result is ~100 MB: that is the price of
-bundling GTK.
+the GUI. Build needs: curl, `gobject-introspection`, cairo and pycairo headers
+(`python-cairo` on Arch, to build PyGObject for the bundled Python),
+`glib-compile-schemas` and `gdk-pixbuf-query-loaders`. The result is ~100 MB:
+that is the price of bundling GTK.
 
 ## Flatpak
 

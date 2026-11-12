@@ -13,7 +13,8 @@ jobs:
       - uses: actions/checkout@v4
       - name: Build package
         run: |
-          pacman -Sy --noconfirm python-build python-pip python-setuptools python-wheel \
+          # -Syu: the container image is a snapshot, a partial upgrade conflicts
+          pacman -Syu --noconfirm python-build python-pip python-setuptools python-wheel \
             desktop-file-utils appstream python qemu-system-x86 edk2-ovmf swtpm efibootmgr util-linux
           useradd builder
           chown -R builder .
@@ -31,6 +32,10 @@ jobs:
     runs-on: ubuntu-latest
     container: debian:stable
     steps:
+      # git before checkout: without it actions/checkout fetches a tarball and
+      # build_deb.sh's `git archive HEAD` would have no repository to read
+      - name: Install git
+        run: apt-get update && apt-get install -y --no-install-recommends git ca-certificates
       - uses: actions/checkout@v4
       - name: Build package
         run: |
@@ -48,6 +53,9 @@ jobs:
     runs-on: ubuntu-latest
     container: fedora:latest
     steps:
+      # git before checkout, so `git archive HEAD` below has a repository
+      - name: Install git
+        run: dnf install -y git
       - uses: actions/checkout@v4
       - name: Build package
         run: |
@@ -69,8 +77,8 @@ jobs:
       - uses: actions/checkout@v4
       - name: Build AppImage
         run: |
-          pacman -Sy --noconfirm python python-pip gtk4 libadwaita gobject-introspection \
-            cairo gdk-pixbuf2 glib2 curl
+          pacman -Syu --noconfirm python python-pip gtk4 libadwaita gobject-introspection \
+            cairo python-cairo gdk-pixbuf2 glib2 curl
           useradd builder
           chown -R builder .
           # appimagetool refuses to run as root
