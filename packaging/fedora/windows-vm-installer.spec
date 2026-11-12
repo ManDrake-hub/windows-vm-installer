@@ -48,9 +48,8 @@ rEFInd).
 %prep
 %setup -q -n windows-vm-installer-main
 
-# %pyproject_wheel builds without isolation (no PyPI access): the PEP 517
+# The wheel build runs without isolation (no PyPI access): the PEP 517
 # backend comes from python3-setuptools and python3-wheel in BuildRequires.
-# Keep this comment outside %build: inside, it would be swallowed by the macro.
 %build
 %pyproject_wheel
 
