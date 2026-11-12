@@ -21,8 +21,9 @@ src="$work/windows-vm-installer_$version"
 
 # a clean copy of the tracked source, named as a native source package expects
 # (git archive: no untracked files like backup/ or test images end up in it)
+# -c safe.directory: in CI the checkout is owned by another uid
 mkdir -p "$src"
-git -C "$root" archive HEAD | tar -C "$src" -xf -
+git -C "$root" -c safe.directory="$root" archive HEAD | tar -C "$src" -xf -
 cp -r "$here" "$src/debian"
 
 cd "$src"
