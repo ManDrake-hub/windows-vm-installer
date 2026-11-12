@@ -59,11 +59,14 @@ jobs:
       - uses: actions/checkout@v4
       - name: Build package
         run: |
+          set -o pipefail
           dnf install -y rpm-build python3-devel python3-build python3-setuptools python3-wheel \
             pyproject-rpm-macros desktop-file-utils appstream git tar
           mkdir -p ~/rpmbuild/SOURCES
           # Source0 is the main snapshot; feed it this checkout instead
-          git archive --prefix=windows-vm-installer-main/ HEAD | gzip > ~/rpmbuild/SOURCES/main.tar.gz
+          # -c safe.directory: the checkout is owned by another uid in CI
+          git -c safe.directory="$PWD" archive --prefix=windows-vm-installer-main/ HEAD \
+            | gzip > ~/rpmbuild/SOURCES/main.tar.gz
           rpmbuild -bb packaging/fedora/windows-vm-installer.spec
       - uses: actions/upload-artifact@v4
         with:

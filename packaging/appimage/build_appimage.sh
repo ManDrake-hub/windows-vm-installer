@@ -27,15 +27,28 @@ export PATH="$A/usr/python/bin:$PATH"
 "$PY" -m pip install --no-build-isolation --no-warn-script-location --prefix="$A/usr" \
   "$root" "PyGObject>=3.42"
 
-# GTK 4 / libadwaita stack: ldd closure of the seed libraries
+# GTK 4 / libadwaita stack: ldd closure of the seed libraries.
+# gdk-pixbuf 2.44+ loads images through glycin: include its loaders too.
 mkdir -p "$A/usr/lib"
-for l in libgtk-4.so.1 libadwaita-1.so.0 libgdk_pixbuf-2.0.so.0 \
-         libpangocairo-1.0.so.0 libcairo-gobject.so.2 libgirepository-1.0.so.1; do
-  ldd "/usr/lib/$l" | awk '/=> \//{print $3} /^\//{print $1}'
-done | sort -u | grep -Ev 'ld-linux|libc\.so|libm\.so|libpthread|libdl\.so|librt\.so|libresolv' \
+{
+  for l in libgtk-4.so.1 libadwaita-1.so.0 libgdk_pixbuf-2.0.so.0 \
+           libpangocairo-1.0.so.0 libcairo-gobject.so.2 libgirepository-1.0.so.1; do
+    ldd "/usr/lib/$l"
+  done
+  if [ -d /usr/lib/glycin-loaders ]; then
+    for l in /usr/lib/glycin-loaders/2+/*; do ldd "$l"; done
+  fi
+} | awk '/=> \//{print $3} /^\//{print $1}' | sort -u \
+  | grep -Ev 'ld-linux|libc\.so|libm\.so|libpthread|libdl\.so|librt\.so|libresolv' \
   | while read -r f; do cp -Ln "$f" "$A/usr/lib/"; done
 cp -a /usr/lib/girepository-1.0 "$A/usr/lib/"
-cp -a /usr/lib/gdk-pixbuf-2.0 "$A/usr/lib/"
+# legacy pixbuf loaders: only exist if some package still installs them
+[ ! -d /usr/lib/gdk-pixbuf-2.0 ] || cp -a /usr/lib/gdk-pixbuf-2.0 "$A/usr/lib/"
+if [ -d /usr/lib/glycin-loaders ]; then
+  cp -a /usr/lib/glycin-loaders "$A/usr/lib/"
+  mkdir -p "$A/usr/share"
+  cp -a /usr/share/glycin-loaders "$A/usr/share/"
+fi
 mkdir -p "$A/usr/bin"
 cp /usr/bin/gdk-pixbuf-query-loaders "$A/usr/bin/"
 
@@ -68,8 +81,20 @@ export GDK_PIXBUF_MODULEDIR="$HERE/usr/lib/gdk-pixbuf-2.0/2.10.0/loaders"
 export GDK_PIXBUF_MODULE_FILE="$HERE/usr/lib/gdk-pixbuf-2.0/2.10.0/loaders.cache"
 "$HERE/usr/bin/gdk-pixbuf-query-loaders" > "$GDK_PIXBUF_MODULE_FILE" 2>/dev/null || true
 export PYTHONPATH="$HERE/usr/lib/python3.12/site-packages"
+# glycin's .conf files hardcode /usr/lib: rewrite them into a writable copy
+if [ -d "$HERE/usr/share/glycin-loaders" ]; then
+  GLYCIN_DATA_DIR=$(mktemp -d)
+  export GLYCIN_DATA_DIR
+  mkdir -p "$GLYCIN_DATA_DIR/glycin-loaders"
+  cp -a "$HERE/usr/share/glycin-loaders/." "$GLYCIN_DATA_DIR/glycin-loaders/"
+  sed -i "s|=/usr/lib/glycin-loaders|=$HERE/usr/lib/glycin-loaders|" \
+    "$GLYCIN_DATA_DIR"/glycin-loaders/*/conf.d/*.conf
+fi
 [ $# -gt 0 ] || set -- gui
-exec "$HERE/usr/python/bin/python3" -m wvi "$@"
+"$HERE/usr/python/bin/python3" -m wvi "$@"
+status=$?
+[ -z "${GLYCIN_DATA_DIR:-}" ] || rm -rf "$GLYCIN_DATA_DIR"
+exit $status
 EOF
 chmod 755 "$A/AppRun"
 
