@@ -4,7 +4,9 @@
 The window runs as the user: reading the ISO and listing disks need no
 privileges. The installation itself runs `windows-vm-installer install --json`
 through pkexec, and the window follows its JSON events. GUI programs started as
-root work badly on Wayland, so the GUI is never elevated itself.
+root work badly on Wayland, so the GUI is never elevated itself. Inside a
+Flatpak the sandbox cannot get root at all, so the elevated command goes
+through `flatpak-spawn --host pkexec` to the CLI installed on the host.
 """
 
 from __future__ import annotations
@@ -13,6 +15,7 @@ import json
 import os
 import shlex
 import shutil
+import subprocess
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -36,6 +39,10 @@ PHASES = {
     "loading": "Loading Windows Setup",
     "installing": "Installing Windows",
 }
+
+
+def in_flatpak() -> bool:
+    return bool(os.environ.get("FLATPAK_ID")) or Path("/.flatpak-info").exists()
 
 
 def gb(n: int) -> str:
@@ -88,6 +95,18 @@ class Backend:
         self.test_image = test_image
 
     def problems(self) -> list[str]:
+        if in_flatpak():
+            # The sandbox cannot run the installer: the host's package does,
+            # with its own QEMU/OVMF/swtpm. Only the bridge must be there.
+            found = []
+            if shutil.which("flatpak-spawn") is None:
+                found.append("flatpak-spawn is not available in this sandbox")
+            elif subprocess.run(["flatpak-spawn", "--host", "sh", "-c",
+                                 "command -v windows-vm-installer"],
+                                capture_output=True).returncode != 0:
+                found.append("windows-vm-installer is not installed on the host: "
+                             "install the distribution package (the Flatpak is only the graphical front end)")
+            return found
         # Same checks as the installer, except being root: that comes from pkexec
         found = host_problems(test_mode=bool(self.test_image), boot_entry=True, check_root=False)
         if not self.test_image and shutil.which("pkexec") is None:
@@ -120,6 +139,9 @@ class Backend:
         return "The boot manager is detected when the installation runs"
 
     def argv(self, args: list[str], elevated: bool) -> list[str]:
+        if elevated and in_flatpak():
+            # root is impossible inside the sandbox: the host's CLI does the work
+            return ["flatpak-spawn", "--host", "pkexec", "windows-vm-installer", *args]
         cmd = [sys.executable, "-m", "wvi", *args]
         if elevated:
             return [shutil.which("pkexec") or "pkexec", shutil.which("env") or "/usr/bin/env",
@@ -127,6 +149,8 @@ class Backend:
         return cmd
 
     def terminal_command(self, args: list[str]) -> str:
+        if in_flatpak():
+            return shlex.join(["flatpak-spawn", "--host", "pkexec", "windows-vm-installer", *args])
         return shlex.join(["sudo", "env", f"PYTHONPATH={PACKAGE_PARENT}", sys.executable, "-m", "wvi", *args])
 
     def run(self, args: list[str], job: Job) -> None:

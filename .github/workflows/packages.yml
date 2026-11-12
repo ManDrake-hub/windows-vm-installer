@@ -1,0 +1,97 @@
+name: packages
+
+on:
+  push:
+    branches: [main, "packaging/**"]
+  pull_request:
+
+jobs:
+  arch:
+    runs-on: ubuntu-latest
+    container: archlinux:base-devel
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build package
+        run: |
+          pacman -Sy --noconfirm python-build python-pip python-setuptools python-wheel \
+            desktop-file-utils appstream python qemu-system-x86 edk2-ovmf swtpm efibootmgr util-linux
+          useradd builder
+          chown -R builder .
+          # build from this checkout, not from the git remote
+          tar --exclude=.git -czf /tmp/src.tar.gz .
+          sed -i 's|^source=.*|source=("file:///tmp/src.tar.gz")|; s|^sha256sums=.*|sha256sums=(SKIP)|' packaging/arch/PKGBUILD
+          sed -i 's|cd "$pkgname"|cd "$srcdir"|' packaging/arch/PKGBUILD
+          su builder -c "cd packaging/arch && makepkg --noconfirm --skipinteg"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: arch-package
+          path: packaging/arch/*.pkg.tar.zst
+
+  debian:
+    runs-on: ubuntu-latest
+    container: debian:stable
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build package
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends dpkg-dev build-essential debhelper \
+            dh-python python3-all python3-build python3-setuptools python3-wheel \
+            pybuild-plugin-pyproject git
+          packaging/debian/build_deb.sh /tmp/debs
+      - uses: actions/upload-artifact@v4
+        with:
+          name: debian-package
+          path: /tmp/debs/*.deb
+
+  fedora:
+    runs-on: ubuntu-latest
+    container: fedora:latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build package
+        run: |
+          dnf install -y rpm-build python3-devel python3-build python3-setuptools python3-wheel \
+            pyproject-rpm-macros desktop-file-utils appstream git tar
+          mkdir -p ~/rpmbuild/SOURCES
+          # Source0 is the main snapshot; feed it this checkout instead
+          git archive --prefix=windows-vm-installer-main/ HEAD | gzip > ~/rpmbuild/SOURCES/main.tar.gz
+          rpmbuild -bb packaging/fedora/windows-vm-installer.spec
+      - uses: actions/upload-artifact@v4
+        with:
+          name: fedora-package
+          path: ~/rpmbuild/RPMS/noarch/*.rpm
+
+  appimage:
+    runs-on: ubuntu-latest
+    container: archlinux:base-devel
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build AppImage
+        run: |
+          pacman -Sy --noconfirm python python-pip gtk4 libadwaita gobject-introspection \
+            cairo gdk-pixbuf2 glib2 curl
+          useradd builder
+          chown -R builder .
+          # appimagetool refuses to run as root
+          su builder -c "packaging/appimage/build_appimage.sh"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: appimage
+          path: packaging/appimage/*.AppImage
+
+  flatpak:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build Flatpak
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y flatpak flatpak-builder
+          flatpak remote-add --user --if-not-exists flathub https://flathub.org/repo/flathub.flatpakrepo
+          flatpak install --user -y flathub org.gnome.Platform//50 org.gnome.Sdk//50
+          FLATPAK_BUILDER_OPTS="--user --disable-rofiles-fuse" packaging/flatpak/build_flatpak.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: flatpak-bundle
+          path: packaging/flatpak/build/*.flatpak

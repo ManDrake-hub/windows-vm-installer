@@ -1,0 +1,57 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>io.github.mandrake_hub.WindowsVmInstaller</id>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>GPL-3.0-or-later</project_license>
+  <name>Windows VM Installer</name>
+  <summary>Install Windows on another disk, without a USB stick</summary>
+  <description>
+    <p>
+      Install Windows onto a physical disk from Linux, without a USB stick and
+      without touching firmware settings. The Windows installer runs inside a
+      hidden QEMU/KVM virtual machine that can see only the target disk; when
+      its first phase is done, you reboot into the new disk and Windows
+      finishes the setup on the real hardware.
+    </p>
+    <p>
+      Your Linux disk is safe: the installer cannot see it, so it cannot erase
+      it or put its boot files on it. Windows gets its own EFI system
+      partition, you pick the edition you are licensed for, and the new system
+      is added to the boot manager you use (Limine, GRUB, rEFInd).
+    </p>
+    <p>
+      Requires QEMU, OVMF firmware, swtpm and efibootmgr on the host, a Windows
+      10/11 x64 ISO, and a target disk of at least 64 GB connected through NVMe
+      or SATA. The target disk is erased: keep backups.
+    </p>
+  </description>
+  <launchable type="desktop-id">io.github.mandrake_hub.WindowsVmInstaller.desktop</launchable>
+  <icon type="stock">io.github.mandrake_hub.WindowsVmInstaller</icon>
+  <categories>
+    <category>System</category>
+  </categories>
+  <keywords>
+    <keyword>windows</keyword>
+    <keyword>dual boot</keyword>
+    <keyword>installer</keyword>
+    <keyword>disk</keyword>
+  </keywords>
+  <url type="homepage">https://github.com/ManDrake-hub/windows-vm-installer</url>
+  <url type="bugtracker">https://github.com/ManDrake-hub/windows-vm-installer/issues</url>
+  <url type="vcs-browser">https://github.com/ManDrake-hub/windows-vm-installer</url>
+  <developer id="io.github.mandrake_hub">
+    <name>Geraldino Mandragora</name>
+  </developer>
+  <provides>
+    <binary>windows-vm-installer</binary>
+    <binary>windows-vm-installer-gui</binary>
+  </provides>
+  <content_rating type="oars-1.1"/>
+  <releases>
+    <release version="0.1.0.dev0" date="2026-11-12">
+      <description>
+        <p>Early development: tested on disk image files.</p>
+      </description>
+    </release>
+  </releases>
+</component>

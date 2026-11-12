@@ -19,10 +19,10 @@ work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
 src="$work/windows-vm-installer_$version"
 
-# a clean copy of the source, named as a native source package expects
+# a clean copy of the tracked source, named as a native source package expects
+# (git archive: no untracked files like backup/ or test images end up in it)
 mkdir -p "$src"
-tar -C "$root" --exclude=.git --exclude='__pycache__' --exclude='*.egg-info' \
-    --exclude=dist --exclude=build -cf - . | tar -C "$src" -xf -
+git -C "$root" archive HEAD | tar -C "$src" -xf -
 cp -r "$here" "$src/debian"
 
 cd "$src"

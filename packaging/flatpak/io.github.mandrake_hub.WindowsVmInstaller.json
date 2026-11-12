@@ -1,50 +1,83 @@
 {
     "app-id": "io.github.mandrake_hub.WindowsVmInstaller",
-    "runtime": "org.freedesktop.Platform",
-    "runtime-version": "24.08",
-    "sdk": "org.freedesktop.Sdk",
+    "runtime": "org.gnome.Platform",
+    "runtime-version": "50",
+    "sdk": "org.gnome.Sdk",
     "command": "windows-vm-installer-flatpak",
     "finish-args": [
         "--share=ipc",
         "--socket=fallback-x11",
         "--socket=wayland",
         "--device=dri",
-        "--filesystem=/dev",
-        "--filesystem=/sys/firmware/efi",
-        "--talk-name=org.freedesktop.PolicyKit1",
-        "--system-talk-name=org.freedesktop.PolicyKit1"
+        "--device=all",
+        "--filesystem=/sys/firmware/efi:ro",
+        "--talk-name=org.freedesktop.Flatpak"
     ],
     "modules": [
         {
-            "name": "libefi",
-            "url": "https://github.com/rhboot/libefi/releases/download/efi-3.0.9/libefi-3.0.9.tar.gz",
+            "name": "popt",
             "buildsystem": "autotools",
             "config-opts": [
-                "--prefix=/app"
+                "--prefix=/app",
+                "--disable-nls"
+            ],
+            "sources": [
+                { "type": "archive", "url": "https://github.com/rpm-software-management/popt/archive/refs/tags/popt-1.19-release.tar.gz",
+                  "sha256": "6eb40d650526cb9fe63eb4415bcecdf9cf306f7556e77eff689abc5a44670060" }
+            ]
+        },
+        {
+            "name": "mandoc",
+            "buildsystem": "simple",
+            "build-commands": [
+                "printf 'PREFIX=/app\\nINSTALL_PROGRAM=\"install -m 0755\"\\n' > configure.local",
+                "./configure",
+                "make -j $FLATPAK_BUILDER_N_JOBS",
+                "make install"
+            ],
+            "sources": [
+                { "type": "archive", "url": "http://mandoc.bsd.lv/snapshots/mandoc-1.14.6.tar.gz",
+                  "sha256": "8bf0d570f01e70a6e124884088870cbed7537f36328d512909eb10cd53179d9c" }
+            ]
+        },
+        {
+            "name": "efivar",
+            "buildsystem": "simple",
+            "build-commands": [
+                "make -j $FLATPAK_BUILDER_N_JOBS prefix=/app libdir=/app/lib",
+                "make install prefix=/app libdir=/app/lib"
+            ],
+            "sources": [
+                { "type": "archive", "url": "https://github.com/rhboot/efivar/releases/download/38/efivar-38.tar.bz2",
+                  "sha256": "f018ed6e49c5f1c16d336d9fd7687ce87023276591921db1e49a314ad6515349" }
             ]
         },
         {
             "name": "efibootmgr",
-            "url": "https://github.com/rhboot/efibootmgr/releases/download/18/efibootmgr-18.tar.gz",
-            "buildsystem": "autotools",
-            "config-opts": [
-                "--prefix=/app"
+            "buildsystem": "simple",
+            "build-commands": [
+                "make -j $FLATPAK_BUILDER_N_JOBS prefix=/app EFIDIR=BOOT",
+                "make install prefix=/app sbindir=/app/bin EFIDIR=BOOT"
+            ],
+            "sources": [
+                { "type": "archive", "url": "https://github.com/rhboot/efibootmgr/releases/download/18/efibootmgr-18.tar.bz2",
+                  "sha256": "2b195f912aa353f0d11f21f207684c91460fbc37f9a4f2673e63e5e32d108b10" }
             ]
         },
         {
-            "name": "libtpms",
-            "url": "https://github.com/stefanberger/libtpms/releases/download/v0.10/libtpms-0.10.tar.gz",
+            "name": "util-linux",
             "buildsystem": "autotools",
             "config-opts": [
-                "--prefix=/app"
-            ]
-        },
-        {
-            "name": "swtpm",
-            "url": "https://github.com/stefanberger/swtpm/releases/download/v0.10/swtpm-0.10.tar.gz",
-            "buildsystem": "autotools",
-            "config-opts": [
-                "--prefix=/app"
+                "--prefix=/app",
+                "--disable-all-programs",
+                "--enable-lsblk",
+                "--disable-nls",
+                "--without-python",
+                "--without-systemd"
+            ],
+            "sources": [
+                { "type": "archive", "url": "https://www.kernel.org/pub/linux/utils/util-linux/v2.40/util-linux-2.40.2.tar.xz",
+                  "sha256": "d78b37a66f5922d70edf3bdfb01a6b33d34ed3c3cafd6628203b2a2b67c8e8b3" }
             ]
         },
         {
@@ -55,12 +88,17 @@
             ],
             "build-commands": [
                 "find . -name __pycache__ -type d -exec rm -r {} +",
-                "python3 -m pip wheel --no-deps --no-build-isolation -w /tmp/wheels .",
-                "python3 -m pip install --no-deps --no-index --prefix=/app /tmp/wheels/*.whl",
+                "python3 -m pip wheel --no-deps --no-build-isolation -w wheels .",
+                "python3 -m pip install --no-deps --no-index --prefix=/app wheels/*.whl",
                 "printf '#!/bin/sh\\nexec windows-vm-installer gui \"$@\"\\n' > /app/bin/windows-vm-installer-flatpak",
                 "chmod 755 /app/bin/windows-vm-installer-flatpak",
+                "install -Dm644 data/io.github.mandrake_hub.WindowsVmInstaller.metainfo.xml /app/share/metainfo/io.github.mandrake_hub.WindowsVmInstaller.metainfo.xml",
+                "install -Dm644 data/icons/hicolor/scalable/apps/io.github.mandrake_hub.WindowsVmInstaller.svg /app/share/icons/hicolor/scalable/apps/io.github.mandrake_hub.WindowsVmInstaller.svg",
+                "install -Dm644 data/icons/hicolor/256x256/apps/io.github.mandrake_hub.WindowsVmInstaller.png /app/share/icons/hicolor/256x256/apps/io.github.mandrake_hub.WindowsVmInstaller.png",
                 "mkdir -p /app/share/applications",
-                "sed 's|^Exec=.*|Exec=windows-vm-installer-flatpak|' data/io.github.mandrake_hub.WindowsVmInstaller.desktop > /app/share/applications/io.github.mandrake_hub.WindowsVmInstaller.desktop"
+                "sed 's|^Exec=.*|Exec=windows-vm-installer-flatpak|' data/io.github.mandrake_hub.WindowsVmInstaller.desktop > /app/share/applications/io.github.mandrake_hub.WindowsVmInstaller.desktop",
+                "desktop-file-validate /app/share/applications/io.github.mandrake_hub.WindowsVmInstaller.desktop",
+                "appstreamcli validate --no-net /app/share/metainfo/io.github.mandrake_hub.WindowsVmInstaller.metainfo.xml"
             ]
         }
     ]

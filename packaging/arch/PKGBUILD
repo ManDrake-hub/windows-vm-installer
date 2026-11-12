@@ -15,7 +15,7 @@ license=(GPL-3.0-or-later)
 
 depends=(
   python
-  qemu
+  qemu-system-x86
   edk2-ovmf
   swtpm
   efibootmgr
@@ -26,6 +26,8 @@ makedepends=(
   python-pip
   python-setuptools
   python-wheel
+  desktop-file-utils
+  appstream
 )
 optdepends=(
   "gtk4: graphical installer"
@@ -35,7 +37,7 @@ optdepends=(
   "grub: add Windows to the GRUB menu"
 )
 source=("https://github.com/ManDrake-hub/windows-vm-installer.git")
-sha256sums=SKIP
+sha256sums=('SKIP')
 
 build() {
   cd "$pkgname"
@@ -45,6 +47,8 @@ build() {
 check() {
   cd "$pkgname"
   PYTHONPATH=src python -m unittest discover -s tests
+  desktop-file-validate data/io.github.mandrake_hub.WindowsVmInstaller.desktop
+  appstreamcli validate --no-net data/io.github.mandrake_hub.WindowsVmInstaller.metainfo.xml
 }
 
 package() {
@@ -52,6 +56,13 @@ package() {
   python -m pip install --no-deps --no-index --root="$pkgdir" --prefix=/usr dist/*.whl
   # drop bytecode: it is regenerated on first use
   find "$pkgdir" -name __pycache__ -type d -exec rm -r {} +
+  rm -f "$pkgdir"/usr/lib/python*/site-packages/*.dist-info/direct_url.json
   install -Dm644 "data/io.github.mandrake_hub.WindowsVmInstaller.desktop" \
     "$pkgdir/usr/share/applications/io.github.mandrake_hub.WindowsVmInstaller.desktop"
+  install -Dm644 "data/io.github.mandrake_hub.WindowsVmInstaller.metainfo.xml" \
+    "$pkgdir/usr/share/metainfo/io.github.mandrake_hub.WindowsVmInstaller.metainfo.xml"
+  install -Dm644 "data/icons/hicolor/scalable/apps/io.github.mandrake_hub.WindowsVmInstaller.svg" \
+    "$pkgdir/usr/share/icons/hicolor/scalable/apps/io.github.mandrake_hub.WindowsVmInstaller.svg"
+  install -Dm644 "data/icons/hicolor/256x256/apps/io.github.mandrake_hub.WindowsVmInstaller.png" \
+    "$pkgdir/usr/share/icons/hicolor/256x256/apps/io.github.mandrake_hub.WindowsVmInstaller.png"
 }

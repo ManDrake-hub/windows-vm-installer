@@ -159,6 +159,9 @@ PYTHONPATH=src python3 -m wvi gui --test-image /var/tmp/test.img
 PYTHONPATH=src python3 tools/gui_screenshots.py --out docs/screenshots --scheme light
 ```
 
+Distribution packages (Arch, Debian, Fedora, AppImage, Flatpak) live in
+[packaging/](packaging/README.md); CI builds all five on every push.
+
 ---
 ## Support
 
